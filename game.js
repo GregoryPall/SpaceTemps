@@ -410,9 +410,13 @@ function update(dt) {
   plane.vx = Math.max(-MAX_SPEED, Math.min(MAX_SPEED, plane.vx));
   plane.vy = Math.max(-MAX_SPEED, Math.min(MAX_SPEED, plane.vy));
 
-  // Virer pousse légèrement l'avion vers l'avant (↑ = y négatif)
-  plane.vy -= Math.abs(plane.bank) * 90 * dt;
-  plane.vy = Math.max(-MAX_SPEED, plane.vy);
+  // Virer incline le nez et crée une dérive vers l'avant.
+  // On impose une vitesse minimale vers l'avant proportionnelle au bank :
+  // la friction ne peut pas descendre en dessous de ce seuil.
+  const bankFwd = -Math.abs(plane.bank) * 130; // px/s max à plein virage
+  if (plane.vy > bankFwd) {
+    plane.vy = Math.max(plane.vy - 110 * dt, bankFwd);
+  }
 
   plane.x += plane.vx * dt;
   plane.y += plane.vy * dt;

@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ConjuVol - Jeu de conjugaison</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0a0a1a;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      font-family: 'Segoe UI', sans-serif;
+      overflow: hidden;
+    }
+    #gameCanvas {
+      border: 2px solid #1a3a5c;
+      border-radius: 8px;
+      box-shadow: 0 0 40px rgba(30, 100, 200, 0.3);
+      cursor: none;
+    }
+    #ui {
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      pointer-events: none;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #startScreen, #gameOverScreen {
+      background: rgba(5, 10, 30, 0.92);
+      border: 2px solid #2a6aad;
+      border-radius: 16px;
+      padding: 40px;
+      text-align: center;
+      color: white;
+      max-width: 480px;
+      pointer-events: all;
+      box-shadow: 0 0 60px rgba(30, 100, 255, 0.2);
+    }
+    h1 { font-size: 2.4em; color: #5bc8ff; margin-bottom: 10px; letter-spacing: 2px; }
+    h2 { font-size: 1.8em; color: #5bc8ff; margin-bottom: 10px; }
+    p { color: #aac; margin: 8px 0; line-height: 1.6; }
+    .btn {
+      background: linear-gradient(135deg, #1a5aad, #2a8aff);
+      color: white;
+      border: none;
+      padding: 14px 36px;
+      font-size: 1.1em;
+      border-radius: 30px;
+      cursor: pointer;
+      margin: 8px;
+      transition: all 0.2s;
+      pointer-events: all;
+    }
+    .btn:hover { transform: scale(1.05); box-shadow: 0 4px 20px rgba(42,138,255,0.5); }
+    .btn.secondary { background: linear-gradient(135deg, #1a4a2a, #2a9a4a); }
+    #score-display {
+      position: fixed;
+      top: 16px;
+      right: 24px;
+      color: #5bc8ff;
+      font-size: 1.1em;
+      font-weight: bold;
+      pointer-events: none;
+    }
+    #lives-display {
+      position: fixed;
+      top: 16px;
+      left: 24px;
+      color: #ff6b6b;
+      font-size: 1.3em;
+      pointer-events: none;
+    }
+    .mode-btns { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin: 14px 0; }
+    .mode-btn {
+      background: rgba(30,60,120,0.5);
+      border: 2px solid #2a6aad;
+      color: #adf;
+      padding: 10px 20px;
+      border-radius: 20px;
+      cursor: pointer;
+      font-size: 0.95em;
+      transition: all 0.2s;
+      pointer-events: all;
+    }
+    .mode-btn.active { background: #1a5aad; border-color: #5bc8ff; color: white; }
+    .mode-btn:hover { border-color: #5bc8ff; }
+    #gameOverScreen { display: none; }
+    .final-score { font-size: 2em; color: #ffd700; margin: 10px 0; }
+    .combo-display {
+      position: fixed;
+      top: 50px;
+      left: 50%;
+      transform: translateX(-50%);
+      color: #ffd700;
+      font-size: 1.4em;
+      font-weight: bold;
+      pointer-events: none;
+      text-shadow: 0 0 10px rgba(255,215,0,0.8);
+    }
+  </style>
+</head>
+<body>
+  <canvas id="gameCanvas"></canvas>
+  <div id="ui">
+    <div id="startScreen">
+      <h1>✈️ ConjuVol</h1>
+      <p>Guide ton avion à travers la bonne conjugaison !</p>
+      <p style="margin-top:12px; font-size:0.9em; color:#88aacc;">
+        Déplace la souris (ou le doigt) pour piloter l'avion.<br>
+        Traverse le bon tunnel pour valider ta réponse.
+      </p>
+      <div style="margin: 18px 0;">
+        <p style="color:#ffd700; font-weight:bold; margin-bottom:8px;">Choisir les temps :</p>
+        <div class="mode-btns">
+          <div class="mode-btn active" data-mode="present">Présent</div>
+          <div class="mode-btn active" data-mode="passe">Passé composé</div>
+          <div class="mode-btn active" data-mode="futur">Futur</div>
+          <div class="mode-btn active" data-mode="imparfait">Imparfait</div>
+        </div>
+      </div>
+      <button class="btn" id="startBtn">Décoller ! 🚀</button>
+    </div>
+    <div id="gameOverScreen">
+      <h2>Atterrissage forcé !</h2>
+      <div class="final-score" id="finalScore">0</div>
+      <p id="finalMsg"></p>
+      <button class="btn" id="restartBtn">Rejouer</button>
+      <button class="btn secondary" id="menuBtn">Menu</button>
+    </div>
+  </div>
+  <div id="score-display">Score : <span id="scoreVal">0</span></div>
+  <div id="lives-display" id="livesVal">❤️❤️❤️</div>
+  <div class="combo-display" id="comboDisplay"></div>
+
+  <script src="game.js"></script>
+</body>
+</html>

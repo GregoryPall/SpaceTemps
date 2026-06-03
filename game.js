@@ -183,6 +183,13 @@ const BANK_RATE  = 4.0;   // how quickly bank angle tracks velocity
 
 let plane = { x: 0, y: 0, vx: 0, vy: 0, bank: 0 };
 
+// ---- Sprite loading ---------------------------------------
+const planeImg = new Image();
+let spriteReady = false;
+planeImg.onload  = () => { spriteReady = true; };
+planeImg.onerror = () => { /* fallback to canvas drawing */ };
+planeImg.src = 'plane.png';
+
 let tunnels = [];
 let particles = [];
 let stars = [];
@@ -569,23 +576,44 @@ function drawTunnel(t) {
   ctx.restore();
 }
 
-// drawPlane: bank in [-1,+1], vy for trail length, prompt/verb for rear panel
+// drawPlane: bank in [-1,+1], prompt/verb for rear panel
 function drawPlane(x, y, bank, vy, prompt, verb) {
   ctx.save();
   ctx.translate(x, y);
 
-  // Small directional tilt from bank
+  // Small directional tilt + horizontal shear for 3D banking illusion
   ctx.rotate(bank * 0.10);
-
-  // Horizontal shear — creates convincing 3D banking illusion
   ctx.transform(1, 0, bank * 0.09, 1, 0, 0);
 
-  // ---- Jet trail ----
-  const speed = Math.hypot(plane.vx, plane.vy);
-  const trailLen = 30 + (speed / MAX_SPEED) * 30 + Math.random() * 10;
-  const trailW = 5 + Math.abs(bank) * 3;
+  if (spriteReady) {
+    drawPlaneSprite(bank);
+  } else {
+    drawPlaneCanvas(bank);
+  }
 
-  // Split trail when banking (two engine outlets)
+  // Rear panel — always drawn on top of whatever plane graphic is used
+  if (prompt) drawRearPanel(prompt, verb);
+
+  ctx.restore();
+}
+
+// Draws using the plane.png sprite.
+// The image nose points LEFT → rotate +π/2 so it points UP.
+// drawW×drawH is the sprite render size; after rotation it appears drawH wide × drawW tall.
+function drawPlaneSprite(bank) {
+  const drawW = 130, drawH = 65; // → 65px wide, 130px tall in game after rotation
+  ctx.save();
+  ctx.rotate(Math.PI / 2);
+  // Slight horizontal scale for 3D depth perception when banking
+  ctx.scale(1, 1 - Math.abs(bank) * 0.12);
+  ctx.drawImage(planeImg, -drawW / 2, -drawH / 2, drawW, drawH);
+  ctx.restore();
+}
+
+// Canvas fallback drawing (used when plane.png is not available)
+function drawPlaneCanvas(bank) {
+  const speed = Math.hypot(plane.vx, plane.vy);
+  const trailLen = 30 + (speed / MAX_SPEED) * 28 + Math.random() * 10;
   for (const side of [-1, 1]) {
     const ox = side * 4;
     const trail = ctx.createLinearGradient(ox, 22, ox, 22 + trailLen);
@@ -594,145 +622,62 @@ function drawPlane(x, y, bank, vy, prompt, verb) {
     trail.addColorStop(1, 'transparent');
     ctx.fillStyle = trail;
     ctx.beginPath();
-    ctx.moveTo(ox - trailW * 0.4, 22);
-    ctx.lineTo(ox + trailW * 0.4, 22);
-    ctx.lineTo(ox + 1, 22 + trailLen);
-    ctx.lineTo(ox - 1, 22 + trailLen);
-    ctx.closePath();
-    ctx.fill();
+    ctx.moveTo(ox - 3, 22); ctx.lineTo(ox + 3, 22);
+    ctx.lineTo(ox + 1, 22 + trailLen); ctx.lineTo(ox - 1, 22 + trailLen);
+    ctx.closePath(); ctx.fill();
   }
-
-  // ---- Wings ----
-  // When banking right (bank > 0): right wing dips (shorter), left wing rises (longer)
-  const leftTipX  = -38 + bank *  8;   // left tip shifts right when banking right
-  const rightTipX =  38 + bank *  8;   // right tip shifts right when banking right
-  const leftTipY  =  16 - bank *  4;   // left tip rises when banking right
-  const rightTipY =  16 + bank *  4;   // right tip dips when banking right
-
-  // Wing shadow (depth)
-  ctx.fillStyle = 'rgba(40,70,120,0.5)';
-  ctx.beginPath();
-  ctx.moveTo(-9, 6); ctx.lineTo(leftTipX + 1, leftTipY + 2); ctx.lineTo(leftTipX - 4, leftTipY + 3); ctx.lineTo(-9, 15); ctx.closePath();
-  ctx.fill();
-  ctx.beginPath();
-  ctx.moveTo(9, 6); ctx.lineTo(rightTipX - 1, rightTipY + 2); ctx.lineTo(rightTipX + 4, rightTipY + 3); ctx.lineTo(9, 15); ctx.closePath();
-  ctx.fill();
-
-  // Wings
+  const lx = -38 + bank * 8, ly = 16 - bank * 4;
+  const rx =  38 + bank * 8, ry = 16 + bank * 4;
   ctx.fillStyle = '#7aaee0';
-  // Left
-  ctx.beginPath();
-  ctx.moveTo(-8, 5);
-  ctx.lineTo(leftTipX, leftTipY);
-  ctx.lineTo(leftTipX - 5, leftTipY + 5);
-  ctx.lineTo(-8, 14);
-  ctx.closePath();
-  ctx.fill();
-  // Right
-  ctx.beginPath();
-  ctx.moveTo(8, 5);
-  ctx.lineTo(rightTipX, rightTipY);
-  ctx.lineTo(rightTipX + 5, rightTipY + 5);
-  ctx.lineTo(8, 14);
-  ctx.closePath();
-  ctx.fill();
-
-  // Wing highlight strip
-  ctx.fillStyle = 'rgba(200,230,255,0.25)';
-  ctx.beginPath();
-  ctx.moveTo(-8, 5); ctx.lineTo(leftTipX, leftTipY); ctx.lineTo(leftTipX, leftTipY + 1); ctx.lineTo(-8, 6); ctx.closePath();
-  ctx.fill();
-  ctx.beginPath();
-  ctx.moveTo(8, 5); ctx.lineTo(rightTipX, rightTipY); ctx.lineTo(rightTipX, rightTipY + 1); ctx.lineTo(8, 6); ctx.closePath();
-  ctx.fill();
-
-  // ---- Fuselage ----
+  ctx.beginPath(); ctx.moveTo(-8,5); ctx.lineTo(lx,ly); ctx.lineTo(lx-5,ly+5); ctx.lineTo(-8,14); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo( 8,5); ctx.lineTo(rx,ry); ctx.lineTo(rx+5,ry+5); ctx.lineTo( 8,14); ctx.closePath(); ctx.fill();
   ctx.fillStyle = '#c0d8f5';
-  ctx.beginPath();
-  ctx.moveTo(0, -32);
-  ctx.bezierCurveTo(7, -18, 9, 0, 7, 20);
-  ctx.lineTo(-7, 20);
-  ctx.bezierCurveTo(-9, 0, -7, -18, 0, -32);
-  ctx.closePath();
-  ctx.fill();
-
-  // Fuselage side shading
-  const fShade = ctx.createLinearGradient(-9, 0, 9, 0);
-  fShade.addColorStop(0, 'rgba(0,0,60,0.35)');
-  fShade.addColorStop(0.45, 'rgba(255,255,255,0.18)');
-  fShade.addColorStop(1, 'rgba(0,0,60,0.35)');
-  ctx.fillStyle = fShade;
-  ctx.beginPath();
-  ctx.moveTo(0, -32);
-  ctx.bezierCurveTo(7, -18, 9, 0, 7, 20);
-  ctx.lineTo(-7, 20);
-  ctx.bezierCurveTo(-9, 0, -7, -18, 0, -32);
-  ctx.closePath();
-  ctx.fill();
-
-  // ---- Tail fins ----
+  ctx.beginPath(); ctx.moveTo(0,-32); ctx.bezierCurveTo(7,-18,9,0,7,20); ctx.lineTo(-7,20); ctx.bezierCurveTo(-9,0,-7,-18,0,-32); ctx.closePath(); ctx.fill();
   ctx.fillStyle = '#6898cc';
-  ctx.beginPath(); ctx.moveTo(-5, 13); ctx.lineTo(-17, 20); ctx.lineTo(-11, 22); ctx.lineTo(-5, 17); ctx.closePath(); ctx.fill();
-  ctx.beginPath(); ctx.moveTo( 5, 13); ctx.lineTo( 17, 20); ctx.lineTo( 11, 22); ctx.lineTo( 5, 17); ctx.closePath(); ctx.fill();
-
-  // ---- Cockpit ----
-  const cg = ctx.createRadialGradient(-2, -19, 1, 0, -17, 8);
-  cg.addColorStop(0, 'rgba(180,230,255,0.95)');
-  cg.addColorStop(1, 'rgba(20,70,160,0.7)');
+  ctx.beginPath(); ctx.moveTo(-5,13); ctx.lineTo(-17,20); ctx.lineTo(-11,22); ctx.lineTo(-5,17); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo( 5,13); ctx.lineTo( 17,20); ctx.lineTo( 11,22); ctx.lineTo( 5,17); ctx.closePath(); ctx.fill();
+  const cg = ctx.createRadialGradient(-2,-19,1,0,-17,8);
+  cg.addColorStop(0,'rgba(180,230,255,0.95)'); cg.addColorStop(1,'rgba(20,70,160,0.7)');
   ctx.fillStyle = cg;
+  ctx.beginPath(); ctx.ellipse(0,-17,5,8,0,0,Math.PI*2); ctx.fill();
+}
+
+// Panel at the rear fuselage showing the conjugation prompt
+function drawRearPanel(prompt, verb) {
+  // When using the sprite: rear is roughly at y=+18 in game space (engine area).
+  // When using canvas fallback: rear fuselage is also around y=+8..+18.
+  const py = spriteReady ? 12 : 8;
+  const pw = 40, ph = 22;
+
+  ctx.fillStyle = 'rgba(0,5,20,0.88)';
+  ctx.strokeStyle = '#1a4aaa';
+  ctx.lineWidth = 1.2;
   ctx.beginPath();
-  ctx.ellipse(0, -17, 5, 8, 0, 0, Math.PI * 2);
+  ctx.roundRect(-pw / 2, py - ph / 2, pw, ph, 3);
   ctx.fill();
-  ctx.strokeStyle = 'rgba(100,180,255,0.5)';
-  ctx.lineWidth = 1;
   ctx.stroke();
 
-  // ---- Rear display panel (integrated into fuselage rear) ----
-  // The panel sits at the rear of the plane body, between the tail fins
-  if (prompt) {
-    const pw = 38, ph = 20;
-    const py = 8; // center of rear panel within fuselage
-
-    // Panel recess / bezel
-    ctx.fillStyle = 'rgba(0,5,20,0.9)';
-    ctx.strokeStyle = '#1a4aaa';
-    ctx.lineWidth = 1.2;
-    ctx.beginPath();
-    ctx.roundRect(-pw / 2, py - ph / 2, pw, ph, 3);
-    ctx.fill();
-    ctx.stroke();
-
-    // Panel glow
-    ctx.save();
-    ctx.shadowBlur = 8;
-    ctx.shadowColor = '#2a6aff';
-
-    // Prompt text
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    const promptSize = prompt.length > 4 ? 9 : 11;
-    ctx.font = `bold ${promptSize}px Segoe UI`;
-    ctx.fillStyle = '#5bc8ff';
-    ctx.fillText(prompt, 0, py - 3);
-
-    // Verb name
-    ctx.font = '8px Segoe UI';
-    ctx.fillStyle = 'rgba(140,180,220,0.9)';
-    ctx.fillText(verb, 0, py + 7);
-
-    ctx.shadowBlur = 0;
-    ctx.restore();
-
-    // Tiny LED indicators on the panel border
-    for (let i = -1; i <= 1; i += 2) {
-      ctx.beginPath();
-      ctx.arc(i * (pw / 2 - 3), py - ph / 2 + 3, 1.5, 0, Math.PI * 2);
-      ctx.fillStyle = '#3af';
-      ctx.fill();
-    }
-  }
-
+  ctx.save();
+  ctx.shadowBlur = 8;
+  ctx.shadowColor = '#2a6aff';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const promptSize = prompt.length > 4 ? 9 : 11;
+  ctx.font = `bold ${promptSize}px Segoe UI`;
+  ctx.fillStyle = '#5bc8ff';
+  ctx.fillText(prompt, 0, py - 4);
+  ctx.font = '8px Segoe UI';
+  ctx.fillStyle = 'rgba(140,180,220,0.9)';
+  ctx.fillText(verb, 0, py + 6);
+  ctx.shadowBlur = 0;
   ctx.restore();
+
+  for (const i of [-1, 1]) {
+    ctx.beginPath();
+    ctx.arc(i * (pw / 2 - 3), py - ph / 2 + 3, 1.5, 0, Math.PI * 2);
+    ctx.fillStyle = '#3af';
+    ctx.fill();
+  }
 }
 
 // ---- UI events --------------------------------------------

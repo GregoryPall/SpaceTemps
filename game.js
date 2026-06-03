@@ -186,9 +186,28 @@ let plane = { x: 0, y: 0, vx: 0, vy: 0, bank: 0 };
 // ---- Sprite loading ---------------------------------------
 const planeImg = new Image();
 let spriteReady = false;
-planeImg.onload  = () => { spriteReady = true; console.log('plane.png chargé ✓'); };
-planeImg.onerror = () => { console.warn('plane.png introuvable — dessin Canvas utilisé'); };
-planeImg.src = 'plane.png';
+
+function loadSprite(src) {
+  planeImg.onload  = () => { spriteReady = true; document.getElementById('imgLoader').style.display = 'none'; };
+  planeImg.onerror = () => { document.getElementById('imgLoader').style.display = 'block'; };
+  planeImg.src = src;
+}
+
+// Try localStorage first, then the file
+const savedSprite = localStorage.getItem('conjuvol_plane');
+loadSprite(savedSprite || 'plane.png');
+
+// File picker: user selects image → saved to localStorage
+document.getElementById('imgInput').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    localStorage.setItem('conjuvol_plane', ev.target.result);
+    loadSprite(ev.target.result);
+  };
+  reader.readAsDataURL(file);
+});
 
 let tunnels = [];
 let particles = [];

@@ -183,14 +183,49 @@ const BANK_RATE  = 4.0;   // how quickly bank angle tracks velocity
 
 let plane = { x: 0, y: 0, vx: 0, vy: 0, bank: 0 };
 
-// ---- Sprite loading ---------------------------------------
-const planeImg = new Image();
+// ---- Sprite loading + background removal ------------------
+let processedSprite = null; // HTMLCanvasElement après traitement
 let spriteReady = false;
 
+// Supprime le fond uni de l'image en remplaçant les pixels proches de la
+// couleur du coin supérieur-gauche par de la transparence.
+function processSprite(img) {
+  const oc = document.createElement('canvas');
+  oc.width = img.naturalWidth;
+  oc.height = img.naturalHeight;
+  const octx = oc.getContext('2d');
+  octx.drawImage(img, 0, 0);
+  try {
+    const w = oc.width, h = oc.height;
+    const data = octx.getImageData(0, 0, w, h);
+    const px = data.data;
+    // Si un des coins est déjà transparent → l'image a déjà un alpha correct
+    const corners = [0, (w-1)*4, (h-1)*w*4, ((h-1)*w + w-1)*4];
+    if (corners.some(i => px[i+3] < 128)) return oc;
+    // Fond détecté : couleur du coin supérieur-gauche
+    const bgR = px[0], bgG = px[1], bgB = px[2];
+    const T = 55 * 55; // tolérance (distance couleur²)
+    for (let i = 0; i < px.length; i += 4) {
+      const dr = px[i]-bgR, dg = px[i+1]-bgG, db = px[i+2]-bgB;
+      if (dr*dr + dg*dg + db*db < T) px[i+3] = 0;
+    }
+    octx.putImageData(data, 0, 0);
+  } catch(e) { /* CORS ou autre — on retourne le canvas tel quel */ }
+  return oc;
+}
+
 function loadSprite(src) {
-  planeImg.onload  = () => { spriteReady = true; document.getElementById('imgLoader').style.display = 'none'; };
-  planeImg.onerror = () => { document.getElementById('imgLoader').style.display = 'block'; };
-  planeImg.src = src;
+  spriteReady = false;
+  processedSprite = null;
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.onload = () => {
+    processedSprite = processSprite(img);
+    spriteReady = true;
+    document.getElementById('imgLoader').style.display = 'none';
+  };
+  img.onerror = () => { document.getElementById('imgLoader').style.display = 'block'; };
+  img.src = src;
 }
 
 // Try localStorage first, then the file
@@ -621,17 +656,16 @@ function drawPlane(x, y, bank, vy, prompt, verb) {
 }
 
 // Draws using the plane.png sprite.
-// The image nose points LEFT → rotate +π/2 so it points UP.
-// drawW×drawH is the sprite render size; after rotation it appears drawH wide × drawW tall.
+// Nez vers le HAUT dans l'image → pas de rotation.
 function drawPlaneSprite(bank) {
-  // Image: nez à GAUCHE → rotation -90° (sens antihoraire) pour nez vers le HAUT
-  // Dans Canvas (Y vers le bas): rotate(-π/2) = sens antihoraire visuel = nez vers le haut ✓
-  const drawW = 130, drawH = 65; // → 65px wide, 130px tall after rotation
+  const spr = processedSprite;
+  // Taille d'affichage : hauteur fixe 110px, largeur proportionnelle
+  const drawH = 110;
+  const drawW = drawH * (spr.width / spr.height);
   ctx.save();
-  ctx.rotate(-Math.PI / 2);
-  // Slight vertical scale for 3D depth perception when banking
-  ctx.scale(1 - Math.abs(bank) * 0.10, 1);
-  ctx.drawImage(planeImg, -drawW / 2, -drawH / 2, drawW, drawH);
+  // Légère compression horizontale lors du virage (effet 3D)
+  ctx.scale(1 - Math.abs(bank) * 0.12, 1);
+  ctx.drawImage(spr, -drawW / 2, -drawH / 2, drawW, drawH);
   ctx.restore();
 }
 
@@ -671,7 +705,8 @@ function drawPlaneCanvas(bank) {
 function drawRearPanel(prompt, verb) {
   // When using the sprite: rear is roughly at y=+18 in game space (engine area).
   // When using canvas fallback: rear fuselage is also around y=+8..+18.
-  const py = spriteReady ? 12 : 8;
+  // Sprite : nez en haut → arrière (moteurs) vers le bas → panel vers y positif
+  const py = spriteReady ? 28 : 8;
   const pw = 40, ph = 22;
 
   ctx.fillStyle = 'rgba(0,5,20,0.88)';

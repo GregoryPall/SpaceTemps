@@ -186,8 +186,8 @@ let plane = { x: 0, y: 0, vx: 0, vy: 0, bank: 0 };
 // ---- Sprite loading ---------------------------------------
 const planeImg = new Image();
 let spriteReady = false;
-planeImg.onload  = () => { spriteReady = true; };
-planeImg.onerror = () => { /* fallback to canvas drawing */ };
+planeImg.onload  = () => { spriteReady = true; console.log('plane.png chargé ✓'); };
+planeImg.onerror = () => { console.warn('plane.png introuvable — dessin Canvas utilisé'); };
 planeImg.src = 'plane.png';
 
 let tunnels = [];
@@ -355,6 +355,10 @@ function update(dt) {
 
   plane.vx = Math.max(-MAX_SPEED, Math.min(MAX_SPEED, plane.vx));
   plane.vy = Math.max(-MAX_SPEED, Math.min(MAX_SPEED, plane.vy));
+
+  // Virer pousse légèrement l'avion vers l'avant (↑ = y négatif)
+  plane.vy -= Math.abs(plane.bank) * 90 * dt;
+  plane.vy = Math.max(-MAX_SPEED, plane.vy);
 
   plane.x += plane.vx * dt;
   plane.y += plane.vy * dt;
@@ -601,11 +605,13 @@ function drawPlane(x, y, bank, vy, prompt, verb) {
 // The image nose points LEFT → rotate +π/2 so it points UP.
 // drawW×drawH is the sprite render size; after rotation it appears drawH wide × drawW tall.
 function drawPlaneSprite(bank) {
-  const drawW = 130, drawH = 65; // → 65px wide, 130px tall in game after rotation
+  // Image: nez à GAUCHE → rotation -90° (sens antihoraire) pour nez vers le HAUT
+  // Dans Canvas (Y vers le bas): rotate(-π/2) = sens antihoraire visuel = nez vers le haut ✓
+  const drawW = 130, drawH = 65; // → 65px wide, 130px tall after rotation
   ctx.save();
-  ctx.rotate(Math.PI / 2);
-  // Slight horizontal scale for 3D depth perception when banking
-  ctx.scale(1, 1 - Math.abs(bank) * 0.12);
+  ctx.rotate(-Math.PI / 2);
+  // Slight vertical scale for 3D depth perception when banking
+  ctx.scale(1 - Math.abs(bank) * 0.10, 1);
   ctx.drawImage(planeImg, -drawW / 2, -drawH / 2, drawW, drawH);
   ctx.restore();
 }

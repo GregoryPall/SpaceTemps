@@ -199,8 +199,8 @@ let plane = { x: 0, y: 0, vx: 0, vy: 0, bank: 0 };
 let processedSprite = null; // HTMLCanvasElement après traitement
 let spriteReady = false;
 
-// Supprime le fond uni de l'image en remplaçant les pixels proches de la
-// couleur du coin supérieur-gauche par de la transparence.
+// Supprime le fond (uni ou en damier) par flood-fill 8-connecté depuis les coins.
+// Robuste face aux damiers car la connectivité diagonale traverse les deux couleurs.
 function processSprite(img) {
   const oc = document.createElement('canvas');
   oc.width = img.naturalWidth;
@@ -211,22 +211,57 @@ function processSprite(img) {
     const w = oc.width, h = oc.height;
     const data = octx.getImageData(0, 0, w, h);
     const px = data.data;
-    // Si un des coins est déjà transparent → l'image a déjà un alpha correct
-    const corners = [0, (w-1)*4, (h-1)*w*4, ((h-1)*w + w-1)*4];
-    if (corners.some(i => px[i+3] < 128)) return oc;
-    // Fond détecté : couleur du coin supérieur-gauche
-    const bgR = px[0], bgG = px[1], bgB = px[2];
-    const T = 55 * 55; // tolérance (distance couleur²)
-    for (let i = 0; i < px.length; i += 4) {
-      const dr = px[i]-bgR, dg = px[i+1]-bgG, db = px[i+2]-bgB;
-      if (dr*dr + dg*dg + db*db < T) px[i+3] = 0;
+
+    // Si au moins un coin est déjà transparent → vraie transparence PNG, rien à faire
+    const cornerIdx = [0, (w-1)*4, (h-1)*w*4, ((h-1)*w+w-1)*4];
+    if (cornerIdx.some(i => px[i+3] < 128)) return oc;
+
+    // Échantillonner les couleurs de fond : 4 coins + milieux des 4 bords
+    // → capture les deux couleurs d'un damier
+    const samples = [[0,0],[w-1,0],[0,h-1],[w-1,h-1],
+                     [w>>1,0],[0,h>>1],[w-1,h>>1],[w>>1,h-1]];
+    const bgCols = samples.map(([x,y]) => {
+      const i = (y*w+x)*4;
+      return [px[i], px[i+1], px[i+2]];
+    });
+    const T = 60 * 60; // tolérance par composante²
+
+    function isBg(i) {
+      if (px[i+3] < 10) return true;
+      const r=px[i], g=px[i+1], b=px[i+2];
+      return bgCols.some(([br,bg_,bb]) => {
+        const dr=r-br, dg=g-bg_, db=b-bb;
+        return dr*dr + dg*dg + db*db < T;
+      });
+    }
+
+    // Flood-fill 8-connecté (les diagonales permettent de traverser le damier)
+    const visited = new Uint8Array(w * h);
+    const stack = [0, w-1, w*(h-1), w*h-1]; // index de pixel (pas byte)
+    while (stack.length) {
+      const pi = stack.pop();
+      if (visited[pi]) continue;
+      visited[pi] = 1;
+      if (!isBg(pi * 4)) continue;
+      px[pi*4 + 3] = 0;
+      const x = pi % w, y = (pi / w) | 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (!dx && !dy) continue;
+          const nx = x+dx, ny = y+dy;
+          if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
+            const npi = ny*w+nx;
+            if (!visited[npi]) stack.push(npi);
+          }
+        }
+      }
     }
     octx.putImageData(data, 0, 0);
-  } catch(e) { /* CORS ou autre — on retourne le canvas tel quel */ }
+  } catch(e) {}
   return oc;
 }
 
-function loadSprite(src) {
+function loadSprite(src, bustCache) {
   spriteReady = false;
   processedSprite = null;
   const img = new Image();

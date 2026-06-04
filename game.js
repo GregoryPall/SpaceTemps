@@ -302,7 +302,7 @@ function loadMenuBg(src) {
 
 const savedMenuBg = localStorage.getItem('spacetempas_menu_bg');
 if (savedMenuBg) loadMenuBg(savedMenuBg);
-else loadMenuBg('plane menu.png');
+else loadMenuBg('menu.png');
 
 document.getElementById('menuBgInput').addEventListener('change', e => {
   const file = e.target.files[0];

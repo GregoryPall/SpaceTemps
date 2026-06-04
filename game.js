@@ -721,47 +721,105 @@ function draw() {
 function drawTunnel(t) {
   const r = t.radius;
   const col = TENSE_COLORS[t.tense] || '#2a9fff';
+  const cr = parseInt(col.slice(1,3), 16);
+  const cg = parseInt(col.slice(3,5), 16);
+  const cb = parseInt(col.slice(5,7), 16);
+  const pulse = 0.88 + 0.12 * Math.sin(animTime * 4.2 + t.x * 0.03);
 
-  // Outer glow halo
-  const grd = ctx.createRadialGradient(t.x, t.y, r * 0.4, t.x, t.y, r * 1.5);
-  grd.addColorStop(0, 'transparent');
-  grd.addColorStop(0.6, col + '18');
-  grd.addColorStop(1, 'transparent');
-  ctx.beginPath();
-  ctx.arc(t.x, t.y, r * 1.5, 0, Math.PI * 2);
-  ctx.fillStyle = grd;
-  ctx.fill();
+  // Vue légèrement de dessus : anneaux elliptiques qui rétrécissent et remontent
+  const NRINGS = 4;
+  const vScale = 0.36;  // compression verticale (perspective)
+  const yShift = 9;     // px dont chaque anneau plus profond remonte
+  const rStep  = 0.22;  // réduction de rayon par niveau de profondeur
 
-  // Perspective rings (depth illusion)
-  for (let i = 4; i >= 0; i--) {
-    const rr = r - i * 7;
-    const alpha = i === 0 ? 1 : 0.25 + i * 0.08;
+  // d=0 = anneau avant (le plus grand), d=3 = anneau arrière (le plus petit)
+  const rings = Array.from({length: NRINGS}, (_, d) => {
+    const s = (1 - d * rStep) * pulse;
+    return { rx: r * s, ry: r * s * vScale, cx: t.x, cy: t.y - d * yShift };
+  });
+
+  ctx.save();
+
+  // 1. Halo ambiant externe
+  const halo = ctx.createRadialGradient(t.x, t.y, r * 0.1, t.x, t.y, r * 1.85);
+  halo.addColorStop(0.35, `rgba(${cr},${cg},${cb}, 0.0)`);
+  halo.addColorStop(0.72, `rgba(${cr},${cg},${cb}, 0.16)`);
+  halo.addColorStop(1.0,  'rgba(0,0,0,0)');
+  ctx.beginPath(); ctx.arc(t.x, t.y, r * 1.85, 0, Math.PI * 2);
+  ctx.fillStyle = halo; ctx.fill();
+
+  // 2. Fond intérieur du tunnel (dégradé radial, donne la profondeur)
+  {
+    const fr = rings[0];
+    const depth = ctx.createRadialGradient(t.x, fr.cy - fr.ry * 0.25, 1, t.x, fr.cy, fr.rx * 1.05);
+    depth.addColorStop(0.0, `rgba(${cr},${cg},${cb}, 0.08)`);
+    depth.addColorStop(0.5, `rgba(2, 6, 24, 0.82)`);
+    depth.addColorStop(1.0, `rgba(0, 2, 12, 0.97)`);
     ctx.beginPath();
-    ctx.ellipse(t.x, t.y, rr, rr * 0.35, 0, 0, Math.PI * 2);
-    ctx.strokeStyle = col;
-    ctx.lineWidth = i === 0 ? 2.5 : 1;
-    ctx.globalAlpha = alpha;
-    ctx.stroke();
-    ctx.globalAlpha = 1;
+    ctx.ellipse(fr.cx, fr.cy, fr.rx, fr.ry, 0, 0, Math.PI * 2);
+    ctx.fillStyle = depth; ctx.fill();
   }
 
-  // Dark hole center
-  ctx.beginPath();
-  ctx.ellipse(t.x, t.y, r * 0.52, r * 0.18, 0, 0, Math.PI * 2);
-  ctx.fillStyle = 'rgba(0,0,0,0.75)';
-  ctx.fill();
+  // 3. Parois du tunnel entre anneaux consécutifs (evenodd = donut)
+  for (let d = 0; d < NRINGS - 1; d++) {
+    const outer = rings[d];
+    const inner = rings[d + 1];
+    const b = (1 - d * 0.28) * 0.38;
+    const wg = ctx.createLinearGradient(0, inner.cy - inner.ry, 0, outer.cy + outer.ry * 0.6);
+    wg.addColorStop(0,   `rgba(${cr},${cg},${cb}, ${b * 0.85})`);
+    wg.addColorStop(0.55,`rgba(${Math.floor(cr*0.35)},${Math.floor(cg*0.35)},${Math.floor(cb*0.45)}, ${b * 0.6})`);
+    wg.addColorStop(1,   `rgba(0, 3, 18, 0.25)`);
+    ctx.beginPath();
+    ctx.ellipse(outer.cx, outer.cy, outer.rx + 0.5, outer.ry + 0.5, 0, 0, Math.PI * 2);
+    ctx.ellipse(inner.cx, inner.cy, inner.rx,       inner.ry,       0, 0, Math.PI * 2);
+    ctx.fillStyle = wg;
+    ctx.fill('evenodd');
+  }
 
+  // 4. Anneaux du plus loin au plus proche
+  for (let d = NRINGS - 1; d >= 0; d--) {
+    const ring = rings[d];
+    const a = (1.0 - d * 0.18) * pulse;
+    const lw = d === 0 ? 2.4 : 1.5 - d * 0.15;
 
-  // Label
+    // Lueur douce
+    ctx.beginPath();
+    ctx.ellipse(ring.cx, ring.cy, ring.rx, ring.ry, 0, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(${cr},${cg},${cb}, ${a * 0.28})`;
+    ctx.lineWidth = lw + 7;
+    ctx.stroke();
+
+    // Anneau principal
+    ctx.beginPath();
+    ctx.ellipse(ring.cx, ring.cy, ring.rx, ring.ry, 0, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(${cr},${cg},${cb}, ${a})`;
+    ctx.lineWidth = lw;
+    ctx.stroke();
+
+    // Reflet spéculaire (arc supérieur) sur les 2 anneaux avant
+    if (d <= 1) {
+      ctx.beginPath();
+      ctx.ellipse(ring.cx, ring.cy, ring.rx * 0.8, ring.ry * 0.8, 0, -Math.PI * 0.78, -Math.PI * 0.22);
+      ctx.strokeStyle = `rgba(255,255,255, ${(0.75 - d * 0.35) * pulse})`;
+      ctx.lineWidth = 1.2 - d * 0.2;
+      ctx.stroke();
+    }
+  }
+
+  // 5. Label
+  const labelY = t.y - yShift * 1.2;
   const fontSize = t.label.length > 8 ? 12 : t.label.length > 5 ? 14 : 17;
-  ctx.save();
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.font = `bold ${fontSize}px Segoe UI`;
-  ctx.fillStyle = 'rgba(0,0,0,0.85)';
-  ctx.fillText(t.label, t.x + 1, t.y + 1);
+  ctx.shadowBlur = 10;
+  ctx.shadowColor = col;
+  ctx.fillStyle = 'rgba(0,0,0,0.75)';
+  ctx.fillText(t.label, t.x + 1, labelY + 1);
+  ctx.shadowBlur = 0;
   ctx.fillStyle = '#ffffff';
-  ctx.fillText(t.label, t.x, t.y);
+  ctx.fillText(t.label, t.x, labelY);
+
   ctx.restore();
 }
 

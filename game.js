@@ -296,6 +296,7 @@ const TUNNEL_SPEED_BASE = 90;
 const TUNNEL_SPEED_INC  = 6;
 let tunnelSpeed = TUNNEL_SPEED_BASE;
 let correctCount = 0;
+let animTime = 0; // continuous timer for animations (seconds)
 
 // ---- Keyboard input ---------------------------------------
 const keys = {};
@@ -473,6 +474,7 @@ function loop(ts) {
 }
 
 function update(dt) {
+  animTime += dt;
   // ---- Plane movement (keyboard) ----
   const left  = keys['ArrowLeft']  || keys['a'] || keys['A'];
   const right = keys['ArrowRight'] || keys['d'] || keys['D'];
@@ -749,15 +751,81 @@ function drawPlane(x, y, bank, vy, prompt, verb) {
   ctx.restore();
 }
 
-// Draws using the plane.png sprite.
-// Nez vers le HAUT dans l'image → pas de rotation.
+// Animated engine flames — drawn in additive mode so they glow over the sprite.
+// engineY : y-position of the nozzle in sprite-local coords (positive = toward tail).
+function drawEngineFlames(bank) {
+  const t = animTime;
+  const scaleX = 1 - Math.abs(bank) * 0.12;
+
+  // Engine nozzle is at roughly 38% of half-height down from center
+  // (sprite: nose at top, engine at ~85% from top → in [-55,+55] coords ≈ +39)
+  const nozzleY = 39;
+
+  ctx.save();
+  ctx.scale(scaleX, 1);
+  ctx.globalCompositeOperation = 'lighter'; // additive glow
+
+  // ---- Core inner flame (bright white-cyan) ----
+  const coreLen = 28 + 10 * Math.sin(t * 22) + 6 * Math.sin(t * 37 + 1.3);
+  const coreW   = 5  +  2 * Math.sin(t * 19 + 0.7);
+  const cg = ctx.createLinearGradient(0, nozzleY, 0, nozzleY + coreLen);
+  cg.addColorStop(0,   'rgba(200, 240, 255, 0.95)');
+  cg.addColorStop(0.3, 'rgba(100, 200, 255, 0.7)');
+  cg.addColorStop(1,   'rgba(40,  120, 255, 0)');
+  ctx.beginPath();
+  ctx.moveTo(-coreW, nozzleY);
+  ctx.bezierCurveTo(-coreW * 1.4, nozzleY + coreLen * 0.45,
+                    -coreW * 0.2, nozzleY + coreLen * 0.85,
+                     0,           nozzleY + coreLen);
+  ctx.bezierCurveTo( coreW * 0.2, nozzleY + coreLen * 0.85,
+                     coreW * 1.4, nozzleY + coreLen * 0.45,
+                     coreW,       nozzleY);
+  ctx.fillStyle = cg;
+  ctx.fill();
+
+  // ---- Outer flame plume (blue, longer, softer) ----
+  const outerLen = 55 + 18 * Math.sin(t * 14 + 0.5) + 10 * Math.sin(t * 27 + 2.1);
+  const outerW   = 12 +  4 * Math.sin(t * 11 + 1.0);
+  // Slight lateral drift for a live feel
+  const drift = 1.5 * Math.sin(t * 8.3);
+  const og = ctx.createLinearGradient(0, nozzleY, 0, nozzleY + outerLen);
+  og.addColorStop(0,   'rgba(80, 180, 255, 0.55)');
+  og.addColorStop(0.4, 'rgba(30, 100, 255, 0.35)');
+  og.addColorStop(0.75,'rgba(10,  50, 200, 0.15)');
+  og.addColorStop(1,   'rgba(0,   20, 150, 0)');
+  ctx.beginPath();
+  ctx.moveTo(-outerW, nozzleY);
+  ctx.bezierCurveTo(-outerW * 1.5 + drift, nozzleY + outerLen * 0.4,
+                    -outerW * 0.3 + drift,  nozzleY + outerLen * 0.85,
+                     drift,                 nozzleY + outerLen);
+  ctx.bezierCurveTo( outerW * 0.3 + drift,  nozzleY + outerLen * 0.85,
+                     outerW * 1.5 + drift,  nozzleY + outerLen * 0.4,
+                     outerW,                nozzleY);
+  ctx.fillStyle = og;
+  ctx.fill();
+
+  // ---- Glow halo at nozzle ----
+  const haloR = 10 + 4 * Math.sin(t * 20);
+  const hg = ctx.createRadialGradient(0, nozzleY, 0, 0, nozzleY, haloR);
+  hg.addColorStop(0,   'rgba(150, 230, 255, 0.5)');
+  hg.addColorStop(0.5, 'rgba(60,  160, 255, 0.2)');
+  hg.addColorStop(1,   'rgba(20,   80, 255, 0)');
+  ctx.beginPath();
+  ctx.arc(0, nozzleY, haloR, 0, Math.PI * 2);
+  ctx.fillStyle = hg;
+  ctx.fill();
+
+  ctx.restore();
+}
+
+// Draws using the plane.png sprite, nez vers le HAUT.
 function drawPlaneSprite(bank) {
   const spr = processedSprite;
-  // Taille d'affichage : hauteur fixe 110px, largeur proportionnelle
   const drawH = 110;
   const drawW = drawH * (spr.width / spr.height);
+  // Flames first (behind sprite so nozzle area overlaps cleanly)
+  drawEngineFlames(bank);
   ctx.save();
-  // Légère compression horizontale lors du virage (effet 3D)
   ctx.scale(1 - Math.abs(bank) * 0.12, 1);
   ctx.drawImage(spr, -drawW / 2, -drawH / 2, drawW, drawH);
   ctx.restore();
@@ -885,6 +953,7 @@ initStars();
 
 function drawStartBg() {
   if (state === 'playing' || state === 'gameover' || state === 'victory') return;
+  animTime += 1 / 60; // ~60fps tick for menu animations
   if (menuBgImage && state === 'intro') {
     // Draw menu background image, cover-fit
     const iw = menuBgImage.naturalWidth, ih = menuBgImage.naturalHeight;

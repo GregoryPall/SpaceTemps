@@ -89,8 +89,22 @@
     }
     .mode-btn.active { background: #1a5aad; border-color: #5bc8ff; color: white; }
     .mode-btn:hover { border-color: #5bc8ff; }
-    #gameOverScreen { display: none; }
+    #gameOverScreen, #missionBriefingScreen, #missionCompleteScreen { display: none; }
     .final-score { font-size: 2em; color: #ffd700; margin: 10px 0; }
+    .lore-text {
+      color: #cce0ff;
+      font-size: 1em;
+      line-height: 1.8;
+      margin: 18px 0 22px;
+      font-style: italic;
+      text-shadow: 0 0 8px rgba(90,180,255,0.3);
+    }
+    .mode-select-btns { display: flex; gap: 16px; justify-content: center; margin-top: 10px; flex-wrap: wrap; }
+    .mission-number { font-size: 0.85em; color: #5bc8ff; letter-spacing: 3px; text-transform: uppercase; margin-bottom: 6px; }
+    .mission-name { font-size: 1.6em; color: #ffd700; font-weight: bold; margin-bottom: 12px; }
+    .mission-desc { color: #aac; font-size: 0.95em; line-height: 1.6; margin-bottom: 20px; }
+    .mission-complete-title { font-size: 1.5em; color: #5bc8ff; margin-bottom: 8px; }
+    .mission-stars { font-size: 2em; margin: 10px 0; }
     .combo-display {
       position: fixed;
       top: 50px;
@@ -107,11 +121,26 @@
 <body>
   <canvas id="gameCanvas"></canvas>
   <div id="ui">
-    <div id="startScreen">
+
+    <!-- Écran d'intro / sélection de mode -->
+    <div id="introScreen">
       <h1>🚀 SpaceTemps</h1>
-      <p>Guide ton avion à travers la bonne conjugaison !</p>
-      <p style="margin-top:12px; font-size:0.9em; color:#88aacc;">
-        Utilise les <strong style="color:#5bc8ff">flèches du clavier</strong> pour piloter l'avion.<br>
+      <p class="lore-text">
+        Nous sommes en 2158, la guerre fait rage dans la galaxie d'Andromède.<br>
+        Gary, jeune pilote, a rejoint le front.<br>
+        Il se bat pour son présent, son passé et son futur.<br>
+        <strong style="color:#5bc8ff">Bienvenue dans SpaceTemps.</strong>
+      </p>
+      <div class="mode-select-btns">
+        <button class="btn" id="missionsModeBtn">🎯 Mode Missions</button>
+        <button class="btn secondary" id="libreModeBtn">🕹️ Mode Libre</button>
+      </div>
+    </div>
+
+    <!-- Écran Mode Libre : sélecteur de temps -->
+    <div id="startScreen" style="display:none;">
+      <h1>🚀 SpaceTemps</h1>
+      <p style="margin-top:4px; font-size:0.9em; color:#88aacc;">
         ← → pour virer, ↑ pour accélérer, ↓ pour freiner.<br>
         Traverse le bon tunnel pour valider ta réponse.
       </p>
@@ -124,8 +153,43 @@
           <div class="mode-btn active" data-mode="imparfait">Imparfait</div>
         </div>
       </div>
-      <button class="btn" id="startBtn">Décoller ! 🚀</button>
+      <div style="display:flex; gap:8px; justify-content:center;">
+        <button class="btn secondary" id="backToIntroBtn">← Retour</button>
+        <button class="btn" id="startBtn">Décoller ! 🚀</button>
+      </div>
     </div>
+
+    <!-- Écran briefing de mission -->
+    <div id="missionBriefingScreen">
+      <div class="mission-number" id="missionNumber">Mission 1 / 4</div>
+      <div class="mission-name" id="missionName">Le Présent</div>
+      <p class="mission-desc" id="missionDesc"></p>
+      <p style="font-size:0.85em; color:#88aacc; margin-bottom:16px;">
+        ← → pour virer, ↑ pour accélérer, ↓ pour freiner.<br>
+        Traverse le bon tunnel pour valider ta réponse.
+      </p>
+      <button class="btn" id="launchMissionBtn">Lancer la mission 🚀</button>
+    </div>
+
+    <!-- Écran mission accomplie -->
+    <div id="missionCompleteScreen">
+      <div class="mission-complete-title">Mission accomplie !</div>
+      <div class="mission-stars" id="missionStars">⭐⭐⭐</div>
+      <p id="missionCompleteMsg"></p>
+      <div style="display:flex; gap:8px; justify-content:center; margin-top:16px;">
+        <button class="btn" id="nextMissionBtn">Mission suivante →</button>
+      </div>
+    </div>
+
+    <!-- Écran victoire finale -->
+    <div id="victoryScreen" style="display:none;">
+      <h2 style="color:#ffd700;">🏆 Victoire !</h2>
+      <div class="mission-stars">⭐⭐⭐⭐</div>
+      <p style="margin:12px 0; color:#cce0ff;">Gary a maîtrisé tous les temps.<br>La galaxie d'Andromède est sauvée !</p>
+      <div class="final-score" id="finalScoreVictory">0</div>
+      <button class="btn" id="victoryMenuBtn">Menu principal</button>
+    </div>
+
     <div id="gameOverScreen">
       <h2>Atterrissage forcé !</h2>
       <div class="final-score" id="finalScore">0</div>
@@ -142,9 +206,14 @@
   <div id="imgLoader" style="display:none; position:fixed; bottom:16px; left:50%; transform:translateX(-50%);
     background:rgba(5,10,30,0.92); border:1px solid #2a6aad; border-radius:10px;
     padding:10px 18px; color:#aac; font-size:0.82em; text-align:center; z-index:100; pointer-events:all;">
-    <span>✈️ Charger l'image de l'avion :</span>
-    <input type="file" id="imgInput" accept="image/*"
-      style="margin-left:8px; color:#5bc8ff; cursor:pointer;">
+    <div style="margin-bottom:6px;">
+      <span>✈️ Image avion :</span>
+      <input type="file" id="imgInput" accept="image/*" style="margin-left:8px; color:#5bc8ff; cursor:pointer;">
+    </div>
+    <div>
+      <span>🌌 Image fond menu :</span>
+      <input type="file" id="menuBgInput" accept="image/*" style="margin-left:8px; color:#5bc8ff; cursor:pointer;">
+    </div>
   </div>
 
   <script src="game.js"></script>

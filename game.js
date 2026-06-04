@@ -169,11 +169,23 @@ const TENSE_LABELS = { present: 'Présent', passe: 'Passé composé', futur: 'Fu
 const TENSE_COLORS = { present: '#2a9fff', passe: '#aa44ff', futur: '#ff9922', imparfait: '#22ddaa' };
 
 // ---- State ------------------------------------------------
-let state = 'start';
+let state = 'intro';
 let score = 0;
 let lives = 3;
 let combo = 0;
 let activeModes = ['present', 'passe', 'futur', 'imparfait'];
+
+// ---- Missions mode ----------------------------------------
+const MISSIONS = [
+  { tense: 'present',   name: 'Le Présent',       desc: 'Gary est en mission de reconnaissance au-dessus de la nébuleuse Sigma. Prouve que tu maîtrises le présent pour maintenir le cap !' },
+  { tense: 'passe',     name: 'Le Passé composé',  desc: "L'escadron a traversé la zone de danger. Raconte les événements passés au passé composé pour débriefing !" },
+  { tense: 'futur',     name: 'Le Futur',          desc: "La grande bataille approche. Gary doit anticiper chaque manœuvre. Conjugue au futur pour préparer l'assaut !" },
+  { tense: 'imparfait', name: "L'Imparfait",       desc: "Les anciens pilotes se souviennent... Maîtrise l'imparfait pour honorer la mémoire de l'escadron !" },
+];
+const MISSION_TARGET = 5;
+let gameMode = 'libre';
+let missionIndex = 0;
+let missionCorrect = 0;
 
 // Plane physics
 const ACCEL      = 480;   // px/s²
@@ -240,6 +252,35 @@ document.getElementById('imgInput').addEventListener('change', e => {
   reader.onload = ev => {
     localStorage.setItem('conjuvol_plane', ev.target.result);
     loadSprite(ev.target.result);
+  };
+  reader.readAsDataURL(file);
+});
+
+// ---- Menu background image --------------------------------
+let menuBgImage = null;
+
+function loadMenuBg(src) {
+  const img = new Image();
+  img.onload = () => { menuBgImage = img; };
+  img.src = src;
+}
+
+const savedMenuBg = localStorage.getItem('spacetempas_menu_bg');
+if (savedMenuBg) loadMenuBg(savedMenuBg);
+else {
+  // Try loading menu.png from same directory
+  const probe = new Image();
+  probe.onload = () => loadMenuBg('menu.png');
+  probe.src = 'menu.png';
+}
+
+document.getElementById('menuBgInput').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    localStorage.setItem('spacetempas_menu_bg', ev.target.result);
+    loadMenuBg(ev.target.result);
   };
   reader.readAsDataURL(file);
 });
@@ -334,8 +375,31 @@ function emitParticles(x, y, correct) {
 }
 
 // ---- Start / Game over ------------------------------------
+function hideAllScreens() {
+  ['introScreen','startScreen','missionBriefingScreen','missionCompleteScreen','victoryScreen','gameOverScreen']
+    .forEach(id => { document.getElementById(id).style.display = 'none'; });
+}
+
+function showIntro() {
+  state = 'intro';
+  hideAllScreens();
+  document.getElementById('introScreen').style.display = '';
+  drawStartBg();
+}
+
+function showMissionBriefing(index) {
+  missionIndex = index;
+  const m = MISSIONS[index];
+  state = 'briefing';
+  hideAllScreens();
+  document.getElementById('missionNumber').textContent = `Mission ${index + 1} / ${MISSIONS.length}`;
+  document.getElementById('missionName').textContent = m.name;
+  document.getElementById('missionDesc').textContent = m.desc;
+  document.getElementById('missionBriefingScreen').style.display = '';
+}
+
 function startGame() {
-  score = 0; lives = 3; combo = 0; correctCount = 0;
+  score = 0; lives = 3; combo = 0; correctCount = 0; missionCorrect = 0;
   tunnelSpeed = TUNNEL_SPEED_BASE;
   tunnels = []; particles = [];
   questionAnswered = false; feedbackTimer = 0; screenShake = 0;
@@ -344,9 +408,12 @@ function startGame() {
   plane.y = canvas.height - 80;
   plane.vx = 0; plane.vy = 0; plane.bank = 0;
 
+  if (gameMode === 'missions') {
+    activeModes = [MISSIONS[missionIndex].tense];
+  }
+
   initStars();
-  document.getElementById('startScreen').style.display = 'none';
-  document.getElementById('gameOverScreen').style.display = 'none';
+  hideAllScreens();
   updateHUD();
   state = 'playing';
   spawnTunnels(pickQuestion());
@@ -356,6 +423,7 @@ function startGame() {
 
 function showGameOver() {
   state = 'gameover';
+  hideAllScreens();
   document.getElementById('gameOverScreen').style.display = 'block';
   document.getElementById('finalScore').textContent = score + ' points';
   let msg = '';
@@ -364,6 +432,31 @@ function showGameOver() {
   else if (score < 300) msg = 'Bien joué ! Tu maîtrises bien les temps.';
   else                  msg = 'Excellent ! Tu es un champion de la conjugaison !';
   document.getElementById('finalMsg').textContent = msg;
+}
+
+function showMissionComplete() {
+  state = 'missionComplete';
+  hideAllScreens();
+  const nextIndex = missionIndex + 1;
+  const isLast = nextIndex >= MISSIONS.length;
+  document.getElementById('missionStars').textContent = lives >= 3 ? '⭐⭐⭐' : lives === 2 ? '⭐⭐' : '⭐';
+  document.getElementById('missionCompleteMsg').textContent = isLast
+    ? 'Tu as terminé toutes les missions !'
+    : `Prochaine mission : ${MISSIONS[nextIndex].name}`;
+  const btn = document.getElementById('nextMissionBtn');
+  btn.textContent = isLast ? '🏆 Victoire !' : 'Mission suivante →';
+  btn.onclick = () => {
+    if (isLast) showVictory();
+    else showMissionBriefing(nextIndex);
+  };
+  document.getElementById('missionCompleteScreen').style.display = '';
+}
+
+function showVictory() {
+  state = 'victory';
+  hideAllScreens();
+  document.getElementById('finalScoreVictory').textContent = score + ' points';
+  document.getElementById('victoryScreen').style.display = '';
 }
 
 function updateHUD() {
@@ -496,12 +589,17 @@ function handleAnswer(t) {
   emitParticles(t.x, t.y, t.isCorrect);
   if (t.isCorrect) {
     correctCount++;
+    missionCorrect++;
     combo++;
     score += 10 * Math.min(combo, 5);
     if (correctCount % 5 === 0) tunnelSpeed = Math.min(TUNNEL_SPEED_BASE + TUNNEL_SPEED_INC * (correctCount / 5), 270);
     feedbackCorrect = true;
     if (combo >= 3) showMsg(`Combo ×${combo} ! 🔥`, '#ffd700');
     else            showMsg('Bravo ! ✓', '#5bc8ff');
+    if (gameMode === 'missions' && missionCorrect >= MISSION_TARGET) {
+      setTimeout(showMissionComplete, 800);
+      return;
+    }
   } else {
     combo = 0;
     lives--;
@@ -755,43 +853,85 @@ document.querySelectorAll('.mode-btn').forEach(btn => {
   });
 });
 
-document.getElementById('startBtn').addEventListener('click', startGame);
-document.getElementById('restartBtn').addEventListener('click', () => {
-  document.getElementById('gameOverScreen').style.display = 'none';
-  startGame();
+document.getElementById('missionsModeBtn').addEventListener('click', () => {
+  gameMode = 'missions';
+  missionIndex = 0;
+  showMissionBriefing(0);
+  drawStartBg();
 });
-document.getElementById('menuBtn').addEventListener('click', () => {
+
+document.getElementById('libreModeBtn').addEventListener('click', () => {
+  gameMode = 'libre';
   state = 'start';
-  document.getElementById('gameOverScreen').style.display = 'none';
-  document.getElementById('startScreen').style.display = 'block';
+  hideAllScreens();
+  document.getElementById('startScreen').style.display = '';
+  drawStartBg();
 });
+
+document.getElementById('backToIntroBtn').addEventListener('click', showIntro);
+
+document.getElementById('startBtn').addEventListener('click', startGame);
+
+document.getElementById('launchMissionBtn').addEventListener('click', startGame);
+
+document.getElementById('restartBtn').addEventListener('click', () => {
+  if (gameMode === 'missions') showMissionBriefing(missionIndex);
+  else { hideAllScreens(); startGame(); }
+});
+
+document.getElementById('menuBtn').addEventListener('click', showIntro);
+
+document.getElementById('victoryMenuBtn').addEventListener('click', showIntro);
 
 // ---- Start screen static preview --------------------------
 plane.x = canvas.width / 2;
 plane.y = canvas.height - 80;
 initStars();
 
-(function drawStartBg() {
-  if (state !== 'start') return;
-  const bg = ctx.createLinearGradient(0, 0, 0, canvas.height);
-  bg.addColorStop(0, '#03050e'); bg.addColorStop(1, '#060c1c');
-  ctx.fillStyle = bg;
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
+function drawStartBg() {
+  if (state === 'playing' || state === 'gameover' || state === 'victory') return;
+  if (menuBgImage && state === 'intro') {
+    // Draw menu background image, cover-fit
+    const iw = menuBgImage.naturalWidth, ih = menuBgImage.naturalHeight;
+    const cw = canvas.width, ch = canvas.height;
+    const scale = Math.max(cw / iw, ch / ih);
+    const dw = iw * scale, dh = ih * scale;
+    ctx.drawImage(menuBgImage, (cw - dw) / 2, (ch - dh) / 2, dw, dh);
+    // Dark overlay so text stays readable
+    ctx.fillStyle = 'rgba(3, 5, 20, 0.55)';
+    ctx.fillRect(0, 0, cw, ch);
+  } else {
+    const bg = ctx.createLinearGradient(0, 0, 0, canvas.height);
+    bg.addColorStop(0, '#03050e'); bg.addColorStop(1, '#060c1c');
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
   for (const s of stars) {
+    s.y += s.spd * 0.5;
+    if (s.y > canvas.height) { s.y = 0; s.x = Math.random() * canvas.width; }
     ctx.beginPath();
     ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
     ctx.fillStyle = `rgba(200,220,255,${s.alpha})`;
     ctx.fill();
   }
+  const cx = canvas.width / 2, cy = canvas.height - 80;
   if (spriteReady && processedSprite) {
-    const px = canvas.width / 2, py = canvas.height - 80;
     ctx.save();
-    ctx.translate(px, py);
+    ctx.translate(cx, cy);
     drawPlaneSprite(0);
     ctx.restore();
-    drawRearPanel(px, py, 0, 'JE', 'être');
+    ctx.save();
+    ctx.translate(cx, cy);
+    drawRearPanel('JE', 'être');
+    ctx.restore();
   } else {
-    drawPlane(canvas.width / 2, canvas.height - 80, 0, 0, 'JE', 'être');
+    drawPlane(cx, cy, 0, 0, 'JE', 'être');
   }
   requestAnimationFrame(drawStartBg);
-})();
+}
+
+// ---- Start screen static preview --------------------------
+plane.x = canvas.width / 2;
+plane.y = canvas.height - 80;
+initStars();
+drawStartBg();

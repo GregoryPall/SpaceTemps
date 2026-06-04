@@ -402,20 +402,26 @@ function update(dt) {
   if (up)   plane.vy -= ACCEL * dt;
   else if (down) plane.vy += ACCEL * dt;
   else {
-    const friction = DECEL * dt;
-    if (Math.abs(plane.vy) <= friction) plane.vy = 0;
-    else plane.vy -= Math.sign(plane.vy) * friction;
+    // Vers l'avant (vy < 0) : friction douce pour garder l'inertie
+    // Vers l'arrière (vy > 0) : friction normale
+    const fwd = DECEL * dt;
+    const back = DECEL * dt;
+    if (plane.vy < 0) {
+      const f = 55 * dt; // friction légère vers l'avant
+      plane.vy = Math.min(0, plane.vy + f);
+    } else {
+      if (plane.vy <= back) plane.vy = 0;
+      else plane.vy -= back;
+    }
   }
 
   plane.vx = Math.max(-MAX_SPEED, Math.min(MAX_SPEED, plane.vx));
   plane.vy = Math.max(-MAX_SPEED, Math.min(MAX_SPEED, plane.vy));
 
-  // Virer incline le nez et crée une dérive vers l'avant.
-  // On impose une vitesse minimale vers l'avant proportionnelle au bank :
-  // la friction ne peut pas descendre en dessous de ce seuil.
-  const bankFwd = -Math.abs(plane.bank) * 130; // px/s max à plein virage
+  // Virer impose une dérive vers l'avant proportionnelle au bank
+  const bankFwd = -Math.abs(plane.bank) * 200;
   if (plane.vy > bankFwd) {
-    plane.vy = Math.max(plane.vy - 110 * dt, bankFwd);
+    plane.vy = Math.max(plane.vy - 160 * dt, bankFwd);
   }
 
   plane.x += plane.vx * dt;
@@ -442,15 +448,15 @@ function update(dt) {
   if (feedbackTimer > 0) {
     feedbackTimer -= dt;
     if (feedbackTimer <= 0) {
-      spawnTunnels(pickQuestion()); // resets questionAnswered = false inside
+      spawnTunnels(pickQuestion());
     }
-    return; // don't process tunnels during feedback
   }
 
-  // ---- Tunnel movement & collision ----
-  if (!questionAnswered) {
-    for (const t of tunnels) t.y += tunnelSpeed * dt;
+  // ---- Tunnel movement (toujours actif) ----
+  for (const t of tunnels) t.y += tunnelSpeed * dt;
 
+  // ---- Collision (seulement si question pas encore répondue) ----
+  if (!questionAnswered) {
     for (const t of tunnels) {
       if (t.passed) continue;
       if (Math.hypot(plane.x - t.x, plane.y - t.y) < t.radius * 0.82) {
@@ -461,7 +467,7 @@ function update(dt) {
       }
     }
 
-    // Missed all tunnels
+    // Tunnels manqués
     if (tunnels.length && tunnels.every(t => t.y > canvas.height + TUNNEL_RADIUS + 10)) {
       questionAnswered = true;
       combo = 0;
@@ -615,15 +621,6 @@ function drawTunnel(t) {
   ctx.fillStyle = 'rgba(0,0,0,0.75)';
   ctx.fill();
 
-  // Frame pillars
-  ctx.save();
-  ctx.globalAlpha = 0.45;
-  ctx.strokeStyle = col;
-  ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.moveTo(t.x - r, t.y); ctx.lineTo(t.x - r, t.y - 30); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(t.x + r, t.y); ctx.lineTo(t.x + r, t.y - 30); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(t.x - r, t.y - 30); ctx.lineTo(t.x + r, t.y - 30); ctx.stroke();
-  ctx.restore();
 
   // Label
   const fontSize = t.label.length > 8 ? 12 : t.label.length > 5 ? 14 : 17;
@@ -786,6 +783,15 @@ initStars();
     ctx.fillStyle = `rgba(200,220,255,${s.alpha})`;
     ctx.fill();
   }
-  drawPlane(canvas.width / 2, canvas.height - 80, 0, 0, 'JE', 'être');
+  if (spriteReady && processedSprite) {
+    const px = canvas.width / 2, py = canvas.height - 80;
+    ctx.save();
+    ctx.translate(px, py);
+    drawPlaneSprite(0);
+    ctx.restore();
+    drawRearPanel(px, py, 0, 'JE', 'être');
+  } else {
+    drawPlane(canvas.width / 2, canvas.height - 80, 0, 0, 'JE', 'être');
+  }
   requestAnimationFrame(drawStartBg);
 })();

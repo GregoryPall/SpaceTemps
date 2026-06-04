@@ -267,12 +267,7 @@ function loadMenuBg(src) {
 
 const savedMenuBg = localStorage.getItem('spacetempas_menu_bg');
 if (savedMenuBg) loadMenuBg(savedMenuBg);
-else {
-  // Try loading menu.png from same directory
-  const probe = new Image();
-  probe.onload = () => loadMenuBg('menu.png');
-  probe.src = 'menu.png';
-}
+else loadMenuBg('plane menu.png');
 
 document.getElementById('menuBgInput').addEventListener('change', e => {
   const file = e.target.files[0];

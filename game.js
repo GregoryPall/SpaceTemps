@@ -187,12 +187,37 @@ let gameMode = 'libre';
 let missionIndex = 0;
 let missionCorrect = 0;
 
-// Plane physics
-const MAX_SPEED   = 340;   // px/s (clamp pour le calcul de bank/effets)
-const BANK_RATE   = 4.0;   // how quickly bank angle tracks velocity
-const FOLLOW_SPEED = 9;    // vitesse de suivi du curseur (lerp)
+// Plane physics — vue plongeante (toboggan) : l'avion ne bouge qu'horizontalement
+// (lane in [-1, 1]), la profondeur (z) gère l'approche des objets.
+const BANK_RATE    = 5.0;   // how quickly bank angle tracks lateral velocity
+const FOLLOW_SPEED = 10;    // vitesse de suivi latéral du curseur (lerp)
 
-let plane = { x: 0, y: 0, vx: 0, vy: 0, bank: 0 };
+let plane = { lane: 0, vlane: 0, bank: 0 };
+
+// ---- Projection pseudo-3D (point de fuite) -----------------
+const VANISH_Y_RATIO    = 0.32; // hauteur du point de fuite (ratio de canvas.height)
+const PLANE_Y_RATIO     = 0.86; // hauteur fixe de l'avion (ratio de canvas.height)
+const SPREAD_FAR        = 18;   // écart latéral (px) au point de fuite (z=1)
+const SPREAD_NEAR_RATIO = 0.5;  // écart latéral relatif à la largeur quand z=0
+const SCALE_FAR         = 0.06; // échelle des objets au point de fuite
+const SCALE_NEAR        = 1.15; // échelle des objets au premier plan
+
+// Projette une position (lane horizontal, profondeur z∈[0,1], 0=proche/1=loin)
+// vers des coordonnées écran + une échelle.
+function project(laneX, z) {
+  const t = Math.max(0, Math.min(1, 1 - z));
+  const ease = t * t; // accélération de l'approche → sensation de vitesse
+  const vanishY = canvas.height * VANISH_Y_RATIO;
+  const planeY  = canvas.height * PLANE_Y_RATIO;
+  const spreadNear = canvas.width * SPREAD_NEAR_RATIO;
+  const spread = SPREAD_FAR + (spreadNear - SPREAD_FAR) * ease;
+  return {
+    x: canvas.width / 2 + laneX * spread,
+    y: vanishY + (planeY - vanishY) * ease,
+    scale: SCALE_FAR + (SCALE_NEAR - SCALE_FAR) * ease,
+    ease,
+  };
+}
 
 // ---- Sprite loading + background removal ------------------
 let processedSprite = null; // HTMLCanvasElement après traitement
@@ -325,24 +350,18 @@ let feedbackCorrect = false;
 let screenShake = 0;
 let comboTimeout = null;
 
-const TUNNEL_RADIUS   = 46;
-const TUNNEL_SPEED_BASE = 90;
-const TUNNEL_SPEED_INC  = 6;
-const METEOR_SPAWN_MIN = 3;   // secondes
-const METEOR_SPAWN_MAX = 6;
-let tunnelSpeed = TUNNEL_SPEED_BASE;
+const TUNNEL_RADIUS   = 46;  // rayon "logique" (échelle 1, premier plan)
+const Z_SPEED_BASE   = 0.34; // unités de profondeur / seconde (z: 1=loin → 0=proche)
+const Z_SPEED_INC    = 0.018;
+const Z_SPEED_MAX    = 0.62;
+const COLLISION_Z    = 0.05; // profondeur à laquelle la collision est testée
+const METEOR_SPAWN_MIN = 1.4;   // secondes
+const METEOR_SPAWN_MAX = 3.0;
+let zSpeed = Z_SPEED_BASE;
 let correctCount = 0;
 let animTime = 0; // continuous timer for animations (seconds)
 
-// ---- Keyboard input ---------------------------------------
-const keys = {};
-window.addEventListener('keydown', e => {
-  keys[e.key] = true;
-  if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown',' '].includes(e.key)) e.preventDefault();
-});
-window.addEventListener('keyup', e => { keys[e.key] = false; });
-
-// ---- Mouse input (pilotage + canon) ------------------------
+// ---- Mouse input (pilotage horizontal + canon) --------------
 const mouse = { x: 0, y: 0, down: false };
 function updateMouseFromEvent(e) {
   const rect = canvas.getBoundingClientRect();
@@ -365,16 +384,15 @@ let meteors = [];
 let fireCooldown = 0;
 let meteorTimer = 3;
 
-// ---- Stars ------------------------------------------------
+// ---- Stars (filent depuis le point de fuite vers la caméra) ----
 function initStars() {
   stars = [];
-  for (let i = 0; i < 130; i++) {
+  for (let i = 0; i < 140; i++) {
     stars.push({
-      x: Math.random() * canvas.width,
-      y: Math.random() * canvas.height,
-      r: Math.random() * 1.6 + 0.3,
-      spd: Math.random() * 0.4 + 0.05,
-      alpha: Math.random() * 0.8 + 0.2,
+      angle: Math.random() * Math.PI * 2,
+      z: Math.random(),
+      spd: Math.random() * 0.25 + 0.18,
+      alpha: Math.random() * 0.7 + 0.3,
     });
   }
 }
@@ -393,25 +411,27 @@ function getTense(q) {
   return 'present';
 }
 
+// Lanes horizontales de base pour les 3 propositions, avec un léger décalage
+// aléatoire pour qu'elles ne soient jamais parfaitement alignées.
+const TUNNEL_LANES = [-0.62, 0, 0.62];
+
 function spawnTunnels(q) {
   if (!q) return;
   currentQuestion = q;
   questionAnswered = false;
   const options = shuffle([q.answer, ...q.wrong.slice(0, 2)]);
-  const colW = canvas.width / 3;
   tunnels = options.map((opt, i) => {
-    const jitter = (Math.random() - 0.5) * colW * 0.5;
-    let x = colW * i + colW / 2 + jitter;
-    x = Math.max(TUNNEL_RADIUS + 5, Math.min(canvas.width - TUNNEL_RADIUS - 5, x));
+    const jitter = (Math.random() - 0.5) * 0.34;
+    let lane = TUNNEL_LANES[i] + jitter;
+    lane = Math.max(-0.92, Math.min(0.92, lane));
     return {
-    x,
-    y: -TUNNEL_RADIUS - 20,
-    label: opt,
-    isCorrect: opt === q.answer,
-    radius: TUNNEL_RADIUS,
-    passed: false,
-    tense: getTense(q),
-  };
+      lane,
+      z: 1,
+      label: opt,
+      isCorrect: opt === q.answer,
+      passed: false,
+      tense: getTense(q),
+    };
   });
 }
 
@@ -460,16 +480,14 @@ function showMissionBriefing(index) {
 
 function startGame() {
   score = 0; lives = 3; combo = 0; correctCount = 0; missionCorrect = 0;
-  tunnelSpeed = TUNNEL_SPEED_BASE;
+  zSpeed = Z_SPEED_BASE;
   tunnels = []; particles = []; meteors = []; projectiles = [];
   fireCooldown = 0;
   meteorTimer = METEOR_SPAWN_MIN + Math.random() * (METEOR_SPAWN_MAX - METEOR_SPAWN_MIN);
   questionAnswered = false; feedbackTimer = 0; screenShake = 0;
 
-  plane.x = canvas.width / 2;
-  plane.y = canvas.height - 80;
-  mouse.x = plane.x; mouse.y = plane.y;
-  plane.vx = 0; plane.vy = 0; plane.bank = 0;
+  plane.lane = 0; plane.vlane = 0; plane.bank = 0;
+  mouse.x = canvas.width / 2;
 
   if (gameMode === 'missions') {
     activeModes = [MISSIONS[missionIndex].tense];
@@ -540,36 +558,34 @@ function loop(ts) {
   requestAnimationFrame(loop);
 }
 
+// Demi-largeur (en lane) des zones de collision
+const TUNNEL_LANE_R = 0.2;
+const PLANE_LANE_R  = 0.10;
+const PROJECTILE_Z_SPEED = 1.7;
+
 function update(dt) {
   animTime += dt;
-  // ---- Plane movement (souris) ----
-  // L'avion suit le curseur avec un lissage (lerp), la vitesse résultante
-  // sert au calcul de l'inclinaison (bank) et des effets visuels.
-  const targetX = Math.max(45, Math.min(canvas.width  - 45, mouse.x));
-  const targetY = Math.max(45, Math.min(canvas.height - 45, mouse.y));
+
+  // ---- Pilotage horizontal (souris) ----
+  // L'avion glisse latéralement (lane ∈ [-1,1]) en suivant le curseur (lerp).
+  const targetLane = Math.max(-0.95, Math.min(0.95, (mouse.x / canvas.width) * 2 - 1));
   const followRate = Math.min(1, FOLLOW_SPEED * dt);
+  const prevLane = plane.lane;
+  plane.lane += (targetLane - plane.lane) * followRate;
+  plane.vlane = (plane.lane - prevLane) / dt;
 
-  const prevX = plane.x, prevY = plane.y;
-  plane.x += (targetX - plane.x) * followRate;
-  plane.y += (targetY - plane.y) * followRate;
-
-  plane.vx = (plane.x - prevX) / dt;
-  plane.vy = (plane.y - prevY) / dt;
-  plane.vx = Math.max(-MAX_SPEED, Math.min(MAX_SPEED, plane.vx));
-  plane.vy = Math.max(-MAX_SPEED, Math.min(MAX_SPEED, plane.vy));
-
-  // Bank angle smoothly tracks horizontal velocity
-  const targetBank = plane.vx / MAX_SPEED; // -1 .. +1
+  // Inclinaison (bank) suit la vitesse latérale
+  const targetBank = Math.max(-1, Math.min(1, plane.vlane * 6));
   plane.bank += (targetBank - plane.bank) * Math.min(1, BANK_RATE * dt);
 
   // ---- Canon : tir continu si bouton maintenu ----
   if (fireCooldown > 0) fireCooldown -= dt;
   if (mouse.down) fireCannon();
 
-  // ---- Stars scroll ----
+  // ---- Étoiles : filent du point de fuite vers la caméra ----
   for (const s of stars) {
-    s.y += s.spd * dt * 60;
-    if (s.y > canvas.height) { s.y = 0; s.x = Math.random() * canvas.width; }
+    s.z -= s.spd * dt;
+    if (s.z <= 0) { s.z = 1; s.angle = Math.random() * Math.PI * 2; }
   }
 
   // ---- Screen shake ----
@@ -583,33 +599,26 @@ function update(dt) {
     }
   }
 
-  // ---- Tunnel movement (toujours actif) ----
-  for (const t of tunnels) t.y += tunnelSpeed * dt;
+  // ---- Approche des tunnels ----
+  for (const t of tunnels) t.z -= zSpeed * dt;
 
   // ---- Collision (seulement si question pas encore répondue) ----
-  if (!questionAnswered) {
-    for (const t of tunnels) {
-      if (t.passed) continue;
-      if (Math.hypot(plane.x - t.x, plane.y - t.y) < t.radius * 0.82) {
-        t.passed = true;
-        questionAnswered = true;
-        handleAnswer(t);
-        break;
-      }
-    }
-
-    // Tunnels manqués
-    if (tunnels.length && tunnels.every(t => t.y > canvas.height + TUNNEL_RADIUS + 10)) {
-      questionAnswered = true;
+  if (!questionAnswered && tunnels.length && tunnels[0].z <= COLLISION_Z) {
+    questionAnswered = true;
+    const hit = tunnels.find(t => Math.abs(plane.lane - t.lane) < TUNNEL_LANE_R + PLANE_LANE_R);
+    if (hit) {
+      handleAnswer(hit);
+    } else {
       combo = 0;
       lives--;
       screenShake = 30;
       updateHUD();
       feedbackCorrect = false;
-      showMsg('Raté ! ✗', '#ff4444');
-      feedbackTimer = 0.9;
+      showMsg('Raté ! ✗ → ' + currentQuestion.answer, '#ff4444');
+      feedbackTimer = 1.0;
       if (lives <= 0) setTimeout(showGameOver, 700);
     }
+    tunnels = [];
   }
 
   // ---- Particles ----
@@ -630,13 +639,14 @@ function update(dt) {
   }
   for (let i = meteors.length - 1; i >= 0; i--) {
     const m = meteors[i];
-    m.y += m.vy * dt;
+    m.z -= zSpeed * (0.85 + m.speedFactor * 0.4) * dt;
     m.rot += m.rotSpeed * dt;
-    if (m.y > canvas.height + m.r + 20) { meteors.splice(i, 1); continue; }
+    if (m.z < -0.15) { meteors.splice(i, 1); continue; }
 
     // Collision avec l'avion
-    if (Math.hypot(plane.x - m.x, plane.y - m.y) < m.r * 0.8 + 16) {
-      emitParticles(m.x, m.y, false);
+    if (m.z <= COLLISION_Z && Math.abs(plane.lane - m.lane) < m.laneR + PLANE_LANE_R) {
+      const proj = project(m.lane, m.z);
+      emitParticles(proj.x, proj.y, false);
       meteors.splice(i, 1);
       combo = 0;
       lives--;
@@ -650,12 +660,13 @@ function update(dt) {
   // ---- Projectiles du canon ----
   for (let i = projectiles.length - 1; i >= 0; i--) {
     const p = projectiles[i];
-    p.y += p.vy * dt;
-    if (p.y < -20) { projectiles.splice(i, 1); continue; }
+    p.z += PROJECTILE_Z_SPEED * dt;
+    if (p.z > 1.05) { projectiles.splice(i, 1); continue; }
     for (let j = meteors.length - 1; j >= 0; j--) {
       const m = meteors[j];
-      if (Math.hypot(p.x - m.x, p.y - m.y) < m.r) {
-        emitParticles(m.x, m.y, true);
+      if (Math.abs(p.z - m.z) < 0.06 && Math.abs(p.lane - m.lane) < m.laneR + 0.04) {
+        const proj = project(m.lane, m.z);
+        emitParticles(proj.x, proj.y, true);
         meteors.splice(j, 1);
         projectiles.splice(i, 1);
         score += 5;
@@ -668,30 +679,31 @@ function update(dt) {
 
 function fireCannon() {
   if (fireCooldown > 0 || state !== 'playing') return;
-  fireCooldown = 0.18;
-  projectiles.push({ x: plane.x, y: plane.y - 32, vy: -700 });
+  fireCooldown = 0.16;
+  projectiles.push({ lane: plane.lane, z: COLLISION_Z });
 }
 
 function spawnMeteor() {
-  const r = 16 + Math.random() * 16;
   meteors.push({
-    x: r + Math.random() * (canvas.width - 2 * r),
-    y: -r - 10,
-    r,
-    vy: tunnelSpeed * (0.8 + Math.random() * 0.5),
+    lane: (Math.random() * 2 - 1) * 0.95,
+    z: 1,
+    laneR: 0.05 + Math.random() * 0.06,
+    baseR: 16 + Math.random() * 16,
+    speedFactor: Math.random(),
     rot: Math.random() * Math.PI * 2,
     rotSpeed: (Math.random() - 0.5) * 2,
   });
 }
 
 function handleAnswer(t) {
-  emitParticles(t.x, t.y, t.isCorrect);
+  const proj = project(t.lane, t.z);
+  emitParticles(proj.x, proj.y, t.isCorrect);
   if (t.isCorrect) {
     correctCount++;
     missionCorrect++;
     combo++;
     score += 10 * Math.min(combo, 5);
-    if (correctCount % 5 === 0) tunnelSpeed = Math.min(TUNNEL_SPEED_BASE + TUNNEL_SPEED_INC * (correctCount / 5), 270);
+    if (correctCount % 5 === 0) zSpeed = Math.min(Z_SPEED_BASE + Z_SPEED_INC * (correctCount / 5), Z_SPEED_MAX);
     feedbackCorrect = true;
     if (combo >= 3) showMsg(`Combo ×${combo} ! 🔥`, '#ffd700');
     else            showMsg('Bravo ! ✓', '#5bc8ff');
@@ -735,13 +747,8 @@ function draw() {
   ctx.fillStyle = bg;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  // Stars
-  for (const s of stars) {
-    ctx.beginPath();
-    ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
-    ctx.fillStyle = `rgba(200,220,255,${s.alpha})`;
-    ctx.fill();
-  }
+  // Stars (filent depuis le point de fuite vers la caméra)
+  drawStarsField();
 
   // Tense label at top
   if (currentQuestion) {
@@ -774,11 +781,12 @@ function draw() {
     ctx.globalAlpha = 1;
   }
 
-  // Plane
+  // Plane (toujours au premier plan, ne se déplace qu'horizontalement)
+  const pp = project(plane.lane, 0);
   if (currentQuestion) {
-    drawPlane(plane.x, plane.y, plane.bank, plane.vy, currentQuestion.prompt, currentQuestion.verb);
+    drawPlane(pp.x, pp.y, plane.bank, currentQuestion.prompt, currentQuestion.verb);
   } else {
-    drawPlane(plane.x, plane.y, plane.bank, plane.vy, '', '');
+    drawPlane(pp.x, pp.y, plane.bank, '', '');
   }
 
   // Feedback flash overlay
@@ -791,72 +799,100 @@ function draw() {
   ctx.restore();
 }
 
+// ---- Stars (filent depuis le point de fuite vers la caméra) ----
+function drawStarsField() {
+  const vanishX = canvas.width / 2;
+  const vanishY = canvas.height * VANISH_Y_RATIO;
+  const maxDist = Math.max(canvas.width, canvas.height) * 0.75;
+  for (const s of stars) {
+    const ease = (1 - s.z) * (1 - s.z);
+    const dist = 4 + ease * maxDist;
+    const tailDist = Math.max(0, dist - (4 + ease * 50));
+    const cosA = Math.cos(s.angle), sinA = Math.sin(s.angle) * 0.7;
+    const x1 = vanishX + cosA * tailDist, y1 = vanishY + sinA * tailDist;
+    const x2 = vanishX + cosA * dist,     y2 = vanishY + sinA * dist;
+    ctx.strokeStyle = `rgba(200,220,255,${(s.alpha * (0.25 + ease * 0.85)).toFixed(3)})`;
+    ctx.lineWidth = 0.6 + ease * 2.2;
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+  }
+}
+
 function drawMeteor(m) {
+  const p = project(m.lane, m.z);
+  const r = m.baseR * p.scale;
   ctx.save();
-  ctx.translate(m.x, m.y);
+  ctx.translate(p.x, p.y);
   ctx.rotate(m.rot);
-  const grad = ctx.createRadialGradient(-m.r * 0.3, -m.r * 0.3, m.r * 0.1, 0, 0, m.r);
+  const grad = ctx.createRadialGradient(-r * 0.3, -r * 0.3, r * 0.1, 0, 0, r);
   grad.addColorStop(0, '#a8988a');
   grad.addColorStop(1, '#4a3a2e');
   ctx.beginPath();
-  ctx.arc(0, 0, m.r, 0, Math.PI * 2);
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
   ctx.fillStyle = grad;
   ctx.fill();
   // Cratères
   ctx.fillStyle = 'rgba(30,20,15,0.5)';
-  ctx.beginPath(); ctx.arc(m.r * 0.32, m.r * 0.18, m.r * 0.22, 0, Math.PI * 2); ctx.fill();
-  ctx.beginPath(); ctx.arc(-m.r * 0.35, -m.r * 0.18, m.r * 0.16, 0, Math.PI * 2); ctx.fill();
-  ctx.beginPath(); ctx.arc(m.r * 0.05, -m.r * 0.42, m.r * 0.13, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(r * 0.32, r * 0.18, r * 0.22, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(-r * 0.35, -r * 0.18, r * 0.16, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(r * 0.05, -r * 0.42, r * 0.13, 0, Math.PI * 2); ctx.fill();
   ctx.restore();
 }
 
 function drawProjectile(p) {
-  const grad = ctx.createLinearGradient(p.x, p.y - 14, p.x, p.y + 14);
+  const proj = project(p.lane, p.z);
+  const len = 14 * proj.scale, w = 2 * proj.scale, dotR = 3 * proj.scale;
+  const grad = ctx.createLinearGradient(proj.x, proj.y - len, proj.x, proj.y + len);
   grad.addColorStop(0,   'rgba(255,255,255,0)');
   grad.addColorStop(0.5, 'rgba(120,220,255,0.95)');
   grad.addColorStop(1,   'rgba(255,255,255,0)');
   ctx.fillStyle = grad;
-  ctx.fillRect(p.x - 2, p.y - 14, 4, 28);
+  ctx.fillRect(proj.x - w, proj.y - len, w * 2, len * 2);
   ctx.beginPath();
-  ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+  ctx.arc(proj.x, proj.y, dotR, 0, Math.PI * 2);
   ctx.fillStyle = 'rgba(200,240,255,0.9)';
   ctx.fill();
 }
 
 function drawTunnel(t) {
-  const r = t.radius;
   const col = TENSE_COLORS[t.tense] || '#2a9fff';
   const cr = parseInt(col.slice(1,3), 16);
   const cg = parseInt(col.slice(3,5), 16);
   const cb = parseInt(col.slice(5,7), 16);
-  const pulse = 0.88 + 0.12 * Math.sin(animTime * 4.2 + t.x * 0.03);
+  const pulse = 0.88 + 0.12 * Math.sin(animTime * 4.2 + t.lane * 6);
 
-  // Vue légèrement de dessus : anneaux elliptiques qui rétrécissent et remontent
+  // Vue plongeante : anneaux elliptiques projetés à différentes profondeurs,
+  // donnent l'illusion d'un tunnel qui s'enfonce dans l'écran.
   const NRINGS = 4;
-  const vScale = 0.36;  // compression verticale (perspective)
-  const yShift = 9;     // px dont chaque anneau plus profond remonte
-  const rStep  = 0.22;  // réduction de rayon par niveau de profondeur
+  const vScale = 0.55;   // compression verticale (vue de dessus)
+  const depthStep = 0.07; // pas de profondeur entre anneaux
 
-  // d=0 = anneau avant (le plus grand), d=3 = anneau arrière (le plus petit)
+  // d=0 = anneau avant (le plus proche/grand), d=3 = anneau arrière (le plus petit)
   const rings = Array.from({length: NRINGS}, (_, d) => {
-    const s = (1 - d * rStep) * pulse;
-    return { rx: r * s, ry: r * s * vScale, cx: t.x, cy: t.y - d * yShift };
+    const pz = Math.min(1, t.z + d * depthStep);
+    const p = project(t.lane, pz);
+    const rx = TUNNEL_RADIUS * p.scale * pulse;
+    return { rx, ry: rx * vScale, cx: p.x, cy: p.y };
   });
+  const r = rings[0].rx;
+  const tx = rings[0].cx, ty = rings[0].cy;
 
   ctx.save();
 
   // 1. Halo ambiant externe
-  const halo = ctx.createRadialGradient(t.x, t.y, r * 0.1, t.x, t.y, r * 1.85);
+  const halo = ctx.createRadialGradient(tx, ty, r * 0.1, tx, ty, r * 1.85);
   halo.addColorStop(0.35, `rgba(${cr},${cg},${cb}, 0.0)`);
   halo.addColorStop(0.72, `rgba(${cr},${cg},${cb}, 0.16)`);
   halo.addColorStop(1.0,  'rgba(0,0,0,0)');
-  ctx.beginPath(); ctx.arc(t.x, t.y, r * 1.85, 0, Math.PI * 2);
+  ctx.beginPath(); ctx.arc(tx, ty, r * 1.85, 0, Math.PI * 2);
   ctx.fillStyle = halo; ctx.fill();
 
   // 2. Fond intérieur du tunnel (dégradé radial, donne la profondeur)
   {
     const fr = rings[0];
-    const depth = ctx.createRadialGradient(t.x, fr.cy - fr.ry * 0.25, 1, t.x, fr.cy, fr.rx * 1.05);
+    const depth = ctx.createRadialGradient(fr.cx, fr.cy - fr.ry * 0.25, 1, fr.cx, fr.cy, fr.rx * 1.05);
     depth.addColorStop(0.0, `rgba(${cr},${cg},${cb}, 0.08)`);
     depth.addColorStop(0.5, `rgba(2, 6, 24, 0.82)`);
     depth.addColorStop(1.0, `rgba(0, 2, 12, 0.97)`);
@@ -912,24 +948,24 @@ function drawTunnel(t) {
   }
 
   // 5. Label
-  const labelY = t.y - yShift * 1.2;
-  const fontSize = t.label.length > 8 ? 12 : t.label.length > 5 ? 14 : 17;
+  const labelY = ty;
+  const fontSize = (t.label.length > 8 ? 12 : t.label.length > 5 ? 14 : 17) * Math.max(0.6, rings[0].rx / TUNNEL_RADIUS);
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.font = `bold ${fontSize}px Segoe UI`;
   ctx.shadowBlur = 10;
   ctx.shadowColor = col;
   ctx.fillStyle = 'rgba(0,0,0,0.75)';
-  ctx.fillText(t.label, t.x + 1, labelY + 1);
+  ctx.fillText(t.label, tx + 1, labelY + 1);
   ctx.shadowBlur = 0;
   ctx.fillStyle = '#ffffff';
-  ctx.fillText(t.label, t.x, labelY);
+  ctx.fillText(t.label, tx, labelY);
 
   ctx.restore();
 }
 
 // drawPlane: bank in [-1,+1], prompt/verb for rear panel
-function drawPlane(x, y, bank, vy, prompt, verb) {
+function drawPlane(x, y, bank, prompt, verb) {
   ctx.save();
   ctx.translate(x, y);
 
@@ -1031,8 +1067,7 @@ function drawPlaneSprite(bank) {
 
 // Canvas fallback drawing (used when plane.png is not available)
 function drawPlaneCanvas(bank) {
-  const speed = Math.hypot(plane.vx, plane.vy);
-  const trailLen = 30 + (speed / MAX_SPEED) * 28 + Math.random() * 10;
+  const trailLen = 36 + Math.random() * 14; // vitesse constante en vue plongeante
   for (const side of [-1, 1]) {
     const ox = side * 4;
     const trail = ctx.createLinearGradient(ox, 22, ox, 22 + trailLen);
@@ -1145,8 +1180,6 @@ document.getElementById('menuBtn').addEventListener('click', showIntro);
 document.getElementById('victoryMenuBtn').addEventListener('click', showIntro);
 
 // ---- Start screen static preview --------------------------
-plane.x = canvas.width / 2;
-plane.y = canvas.height - 80;
 initStars();
 
 function drawStartBg() {
@@ -1169,13 +1202,10 @@ function drawStartBg() {
     ctx.fillRect(0, 0, canvas.width, canvas.height);
   }
   for (const s of stars) {
-    s.y += s.spd * 0.5;
-    if (s.y > canvas.height) { s.y = 0; s.x = Math.random() * canvas.width; }
-    ctx.beginPath();
-    ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
-    ctx.fillStyle = `rgba(200,220,255,${s.alpha})`;
-    ctx.fill();
+    s.z -= s.spd * 0.012;
+    if (s.z <= 0) { s.z = 1; s.angle = Math.random() * Math.PI * 2; }
   }
+  drawStarsField();
   const cx = canvas.width / 2, cy = canvas.height - 80;
   if (spriteReady && processedSprite) {
     ctx.save();
@@ -1187,13 +1217,11 @@ function drawStartBg() {
     drawRearPanel('JE', 'être');
     ctx.restore();
   } else {
-    drawPlane(cx, cy, 0, 0, 'JE', 'être');
+    drawPlane(cx, cy, 0, 'JE', 'être');
   }
   requestAnimationFrame(drawStartBg);
 }
 
 // ---- Start screen static preview --------------------------
-plane.x = canvas.width / 2;
-plane.y = canvas.height - 80;
 initStars();
 drawStartBg();

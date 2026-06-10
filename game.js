@@ -188,10 +188,9 @@ let missionIndex = 0;
 let missionCorrect = 0;
 
 // Plane physics
-const ACCEL      = 480;   // px/s²
-const DECEL      = 320;   // px/s² friction
-const MAX_SPEED  = 340;   // px/s
-const BANK_RATE  = 4.0;   // how quickly bank angle tracks velocity
+const MAX_SPEED   = 340;   // px/s (clamp pour le calcul de bank/effets)
+const BANK_RATE   = 4.0;   // how quickly bank angle tracks velocity
+const FOLLOW_SPEED = 9;    // vitesse de suivi du curseur (lerp)
 
 let plane = { x: 0, y: 0, vx: 0, vy: 0, bank: 0 };
 
@@ -199,8 +198,8 @@ let plane = { x: 0, y: 0, vx: 0, vy: 0, bank: 0 };
 let processedSprite = null; // HTMLCanvasElement après traitement
 let spriteReady = false;
 
-// Supprime le fond uni de l'image en remplaçant les pixels proches de la
-// couleur du coin supérieur-gauche par de la transparence.
+// Supprime le fond (uni ou en damier) par flood-fill 8-connecté depuis les coins.
+// Robuste face aux damiers car la connectivité diagonale traverse les deux couleurs.
 function processSprite(img) {
   const oc = document.createElement('canvas');
   oc.width = img.naturalWidth;
@@ -211,22 +210,57 @@ function processSprite(img) {
     const w = oc.width, h = oc.height;
     const data = octx.getImageData(0, 0, w, h);
     const px = data.data;
-    // Si un des coins est déjà transparent → l'image a déjà un alpha correct
-    const corners = [0, (w-1)*4, (h-1)*w*4, ((h-1)*w + w-1)*4];
-    if (corners.some(i => px[i+3] < 128)) return oc;
-    // Fond détecté : couleur du coin supérieur-gauche
-    const bgR = px[0], bgG = px[1], bgB = px[2];
-    const T = 55 * 55; // tolérance (distance couleur²)
-    for (let i = 0; i < px.length; i += 4) {
-      const dr = px[i]-bgR, dg = px[i+1]-bgG, db = px[i+2]-bgB;
-      if (dr*dr + dg*dg + db*db < T) px[i+3] = 0;
+
+    // Si au moins un coin est déjà transparent → vraie transparence PNG, rien à faire
+    const cornerIdx = [0, (w-1)*4, (h-1)*w*4, ((h-1)*w+w-1)*4];
+    if (cornerIdx.some(i => px[i+3] < 128)) return oc;
+
+    // Échantillonner les couleurs de fond : 4 coins + milieux des 4 bords
+    // → capture les deux couleurs d'un damier
+    const samples = [[0,0],[w-1,0],[0,h-1],[w-1,h-1],
+                     [w>>1,0],[0,h>>1],[w-1,h>>1],[w>>1,h-1]];
+    const bgCols = samples.map(([x,y]) => {
+      const i = (y*w+x)*4;
+      return [px[i], px[i+1], px[i+2]];
+    });
+    const T = 60 * 60; // tolérance par composante²
+
+    function isBg(i) {
+      if (px[i+3] < 10) return true;
+      const r=px[i], g=px[i+1], b=px[i+2];
+      return bgCols.some(([br,bg_,bb]) => {
+        const dr=r-br, dg=g-bg_, db=b-bb;
+        return dr*dr + dg*dg + db*db < T;
+      });
+    }
+
+    // Flood-fill 8-connecté (les diagonales permettent de traverser le damier)
+    const visited = new Uint8Array(w * h);
+    const stack = [0, w-1, w*(h-1), w*h-1]; // index de pixel (pas byte)
+    while (stack.length) {
+      const pi = stack.pop();
+      if (visited[pi]) continue;
+      visited[pi] = 1;
+      if (!isBg(pi * 4)) continue;
+      px[pi*4 + 3] = 0;
+      const x = pi % w, y = (pi / w) | 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (!dx && !dy) continue;
+          const nx = x+dx, ny = y+dy;
+          if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
+            const npi = ny*w+nx;
+            if (!visited[npi]) stack.push(npi);
+          }
+        }
+      }
     }
     octx.putImageData(data, 0, 0);
-  } catch(e) { /* CORS ou autre — on retourne le canvas tel quel */ }
+  } catch(e) {}
   return oc;
 }
 
-function loadSprite(src) {
+function loadSprite(src, bustCache) {
   spriteReady = false;
   processedSprite = null;
   const img = new Image();
@@ -267,12 +301,7 @@ function loadMenuBg(src) {
 
 const savedMenuBg = localStorage.getItem('spacetempas_menu_bg');
 if (savedMenuBg) loadMenuBg(savedMenuBg);
-else {
-  // Try loading menu.png from same directory
-  const probe = new Image();
-  probe.onload = () => loadMenuBg('menu.png');
-  probe.src = 'menu.png';
-}
+else loadMenuBg('menu.png');
 
 document.getElementById('menuBgInput').addEventListener('change', e => {
   const file = e.target.files[0];
@@ -299,8 +328,11 @@ let comboTimeout = null;
 const TUNNEL_RADIUS   = 46;
 const TUNNEL_SPEED_BASE = 90;
 const TUNNEL_SPEED_INC  = 6;
+const METEOR_SPAWN_MIN = 3;   // secondes
+const METEOR_SPAWN_MAX = 6;
 let tunnelSpeed = TUNNEL_SPEED_BASE;
 let correctCount = 0;
+let animTime = 0; // continuous timer for animations (seconds)
 
 // ---- Keyboard input ---------------------------------------
 const keys = {};
@@ -309,6 +341,29 @@ window.addEventListener('keydown', e => {
   if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown',' '].includes(e.key)) e.preventDefault();
 });
 window.addEventListener('keyup', e => { keys[e.key] = false; });
+
+// ---- Mouse input (pilotage + canon) ------------------------
+const mouse = { x: 0, y: 0, down: false };
+function updateMouseFromEvent(e) {
+  const rect = canvas.getBoundingClientRect();
+  mouse.x = (e.clientX - rect.left) * (canvas.width / rect.width);
+  mouse.y = (e.clientY - rect.top) * (canvas.height / rect.height);
+}
+canvas.addEventListener('mousemove', updateMouseFromEvent);
+canvas.addEventListener('mousedown', e => {
+  if (e.button === 0) {
+    updateMouseFromEvent(e);
+    mouse.down = true;
+    fireCannon();
+  }
+});
+window.addEventListener('mouseup', e => { if (e.button === 0) mouse.down = false; });
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+let projectiles = [];
+let meteors = [];
+let fireCooldown = 0;
+let meteorTimer = 3;
 
 // ---- Stars ------------------------------------------------
 function initStars() {
@@ -344,15 +399,20 @@ function spawnTunnels(q) {
   questionAnswered = false;
   const options = shuffle([q.answer, ...q.wrong.slice(0, 2)]);
   const colW = canvas.width / 3;
-  tunnels = options.map((opt, i) => ({
-    x: colW * i + colW / 2,
+  tunnels = options.map((opt, i) => {
+    const jitter = (Math.random() - 0.5) * colW * 0.5;
+    let x = colW * i + colW / 2 + jitter;
+    x = Math.max(TUNNEL_RADIUS + 5, Math.min(canvas.width - TUNNEL_RADIUS - 5, x));
+    return {
+    x,
     y: -TUNNEL_RADIUS - 20,
     label: opt,
     isCorrect: opt === q.answer,
     radius: TUNNEL_RADIUS,
     passed: false,
     tense: getTense(q),
-  }));
+  };
+  });
 }
 
 function shuffle(arr) {
@@ -401,11 +461,14 @@ function showMissionBriefing(index) {
 function startGame() {
   score = 0; lives = 3; combo = 0; correctCount = 0; missionCorrect = 0;
   tunnelSpeed = TUNNEL_SPEED_BASE;
-  tunnels = []; particles = [];
+  tunnels = []; particles = []; meteors = []; projectiles = [];
+  fireCooldown = 0;
+  meteorTimer = METEOR_SPAWN_MIN + Math.random() * (METEOR_SPAWN_MAX - METEOR_SPAWN_MIN);
   questionAnswered = false; feedbackTimer = 0; screenShake = 0;
 
   plane.x = canvas.width / 2;
   plane.y = canvas.height - 80;
+  mouse.x = plane.x; mouse.y = plane.y;
   plane.vx = 0; plane.vy = 0; plane.bank = 0;
 
   if (gameMode === 'missions') {
@@ -478,55 +541,30 @@ function loop(ts) {
 }
 
 function update(dt) {
-  // ---- Plane movement (keyboard) ----
-  const left  = keys['ArrowLeft']  || keys['a'] || keys['A'];
-  const right = keys['ArrowRight'] || keys['d'] || keys['D'];
-  const up    = keys['ArrowUp']    || keys['w'] || keys['W'];
-  const down  = keys['ArrowDown']  || keys['s'] || keys['S'];
+  animTime += dt;
+  // ---- Plane movement (souris) ----
+  // L'avion suit le curseur avec un lissage (lerp), la vitesse résultante
+  // sert au calcul de l'inclinaison (bank) et des effets visuels.
+  const targetX = Math.max(45, Math.min(canvas.width  - 45, mouse.x));
+  const targetY = Math.max(45, Math.min(canvas.height - 45, mouse.y));
+  const followRate = Math.min(1, FOLLOW_SPEED * dt);
 
-  if (left)  plane.vx -= ACCEL * dt;
-  else if (right) plane.vx += ACCEL * dt;
-  else {
-    const friction = DECEL * dt;
-    if (Math.abs(plane.vx) <= friction) plane.vx = 0;
-    else plane.vx -= Math.sign(plane.vx) * friction;
-  }
+  const prevX = plane.x, prevY = plane.y;
+  plane.x += (targetX - plane.x) * followRate;
+  plane.y += (targetY - plane.y) * followRate;
 
-  if (up)   plane.vy -= ACCEL * dt;
-  else if (down) plane.vy += ACCEL * dt;
-  else {
-    // Vers l'avant (vy < 0) : friction douce pour garder l'inertie
-    // Vers l'arrière (vy > 0) : friction normale
-    const fwd = DECEL * dt;
-    const back = DECEL * dt;
-    if (plane.vy < 0) {
-      const f = 55 * dt; // friction légère vers l'avant
-      plane.vy = Math.min(0, plane.vy + f);
-    } else {
-      if (plane.vy <= back) plane.vy = 0;
-      else plane.vy -= back;
-    }
-  }
-
+  plane.vx = (plane.x - prevX) / dt;
+  plane.vy = (plane.y - prevY) / dt;
   plane.vx = Math.max(-MAX_SPEED, Math.min(MAX_SPEED, plane.vx));
   plane.vy = Math.max(-MAX_SPEED, Math.min(MAX_SPEED, plane.vy));
-
-  // Virer impose une dérive vers l'avant proportionnelle au bank
-  const bankFwd = -Math.abs(plane.bank) * 200;
-  if (plane.vy > bankFwd) {
-    plane.vy = Math.max(plane.vy - 160 * dt, bankFwd);
-  }
-
-  plane.x += plane.vx * dt;
-  plane.y += plane.vy * dt;
-
-  // Keep within bounds (with some margin)
-  plane.x = Math.max(45, Math.min(canvas.width  - 45, plane.x));
-  plane.y = Math.max(45, Math.min(canvas.height - 45, plane.y));
 
   // Bank angle smoothly tracks horizontal velocity
   const targetBank = plane.vx / MAX_SPEED; // -1 .. +1
   plane.bank += (targetBank - plane.bank) * Math.min(1, BANK_RATE * dt);
+
+  // ---- Canon : tir continu si bouton maintenu ----
+  if (fireCooldown > 0) fireCooldown -= dt;
+  if (mouse.down) fireCannon();
 
   // ---- Stars scroll ----
   for (const s of stars) {
@@ -583,6 +621,67 @@ function update(dt) {
     p.vy += 50 * dt;
     if (p.age >= p.life) particles.splice(i, 1);
   }
+
+  // ---- Météorites ----
+  meteorTimer -= dt;
+  if (meteorTimer <= 0) {
+    spawnMeteor();
+    meteorTimer = METEOR_SPAWN_MIN + Math.random() * (METEOR_SPAWN_MAX - METEOR_SPAWN_MIN);
+  }
+  for (let i = meteors.length - 1; i >= 0; i--) {
+    const m = meteors[i];
+    m.y += m.vy * dt;
+    m.rot += m.rotSpeed * dt;
+    if (m.y > canvas.height + m.r + 20) { meteors.splice(i, 1); continue; }
+
+    // Collision avec l'avion
+    if (Math.hypot(plane.x - m.x, plane.y - m.y) < m.r * 0.8 + 16) {
+      emitParticles(m.x, m.y, false);
+      meteors.splice(i, 1);
+      combo = 0;
+      lives--;
+      screenShake = 40;
+      updateHUD();
+      showMsg('Météorite ! 💥', '#ff6666');
+      if (lives <= 0) setTimeout(showGameOver, 750);
+    }
+  }
+
+  // ---- Projectiles du canon ----
+  for (let i = projectiles.length - 1; i >= 0; i--) {
+    const p = projectiles[i];
+    p.y += p.vy * dt;
+    if (p.y < -20) { projectiles.splice(i, 1); continue; }
+    for (let j = meteors.length - 1; j >= 0; j--) {
+      const m = meteors[j];
+      if (Math.hypot(p.x - m.x, p.y - m.y) < m.r) {
+        emitParticles(m.x, m.y, true);
+        meteors.splice(j, 1);
+        projectiles.splice(i, 1);
+        score += 5;
+        updateHUD();
+        break;
+      }
+    }
+  }
+}
+
+function fireCannon() {
+  if (fireCooldown > 0 || state !== 'playing') return;
+  fireCooldown = 0.18;
+  projectiles.push({ x: plane.x, y: plane.y - 32, vy: -700 });
+}
+
+function spawnMeteor() {
+  const r = 16 + Math.random() * 16;
+  meteors.push({
+    x: r + Math.random() * (canvas.width - 2 * r),
+    y: -r - 10,
+    r,
+    vy: tunnelSpeed * (0.8 + Math.random() * 0.5),
+    rot: Math.random() * Math.PI * 2,
+    rotSpeed: (Math.random() - 0.5) * 2,
+  });
 }
 
 function handleAnswer(t) {
@@ -659,6 +758,12 @@ function draw() {
   // Tunnels
   for (const t of tunnels) drawTunnel(t);
 
+  // Météorites
+  for (const m of meteors) drawMeteor(m);
+
+  // Projectiles du canon
+  for (const p of projectiles) drawProjectile(p);
+
   // Particles
   for (const p of particles) {
     ctx.beginPath();
@@ -686,50 +791,140 @@ function draw() {
   ctx.restore();
 }
 
+function drawMeteor(m) {
+  ctx.save();
+  ctx.translate(m.x, m.y);
+  ctx.rotate(m.rot);
+  const grad = ctx.createRadialGradient(-m.r * 0.3, -m.r * 0.3, m.r * 0.1, 0, 0, m.r);
+  grad.addColorStop(0, '#a8988a');
+  grad.addColorStop(1, '#4a3a2e');
+  ctx.beginPath();
+  ctx.arc(0, 0, m.r, 0, Math.PI * 2);
+  ctx.fillStyle = grad;
+  ctx.fill();
+  // Cratères
+  ctx.fillStyle = 'rgba(30,20,15,0.5)';
+  ctx.beginPath(); ctx.arc(m.r * 0.32, m.r * 0.18, m.r * 0.22, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(-m.r * 0.35, -m.r * 0.18, m.r * 0.16, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(m.r * 0.05, -m.r * 0.42, m.r * 0.13, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+
+function drawProjectile(p) {
+  const grad = ctx.createLinearGradient(p.x, p.y - 14, p.x, p.y + 14);
+  grad.addColorStop(0,   'rgba(255,255,255,0)');
+  grad.addColorStop(0.5, 'rgba(120,220,255,0.95)');
+  grad.addColorStop(1,   'rgba(255,255,255,0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(p.x - 2, p.y - 14, 4, 28);
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(200,240,255,0.9)';
+  ctx.fill();
+}
+
 function drawTunnel(t) {
   const r = t.radius;
   const col = TENSE_COLORS[t.tense] || '#2a9fff';
+  const cr = parseInt(col.slice(1,3), 16);
+  const cg = parseInt(col.slice(3,5), 16);
+  const cb = parseInt(col.slice(5,7), 16);
+  const pulse = 0.88 + 0.12 * Math.sin(animTime * 4.2 + t.x * 0.03);
 
-  // Outer glow halo
-  const grd = ctx.createRadialGradient(t.x, t.y, r * 0.4, t.x, t.y, r * 1.5);
-  grd.addColorStop(0, 'transparent');
-  grd.addColorStop(0.6, col + '18');
-  grd.addColorStop(1, 'transparent');
-  ctx.beginPath();
-  ctx.arc(t.x, t.y, r * 1.5, 0, Math.PI * 2);
-  ctx.fillStyle = grd;
-  ctx.fill();
+  // Vue légèrement de dessus : anneaux elliptiques qui rétrécissent et remontent
+  const NRINGS = 4;
+  const vScale = 0.36;  // compression verticale (perspective)
+  const yShift = 9;     // px dont chaque anneau plus profond remonte
+  const rStep  = 0.22;  // réduction de rayon par niveau de profondeur
 
-  // Perspective rings (depth illusion)
-  for (let i = 4; i >= 0; i--) {
-    const rr = r - i * 7;
-    const alpha = i === 0 ? 1 : 0.25 + i * 0.08;
+  // d=0 = anneau avant (le plus grand), d=3 = anneau arrière (le plus petit)
+  const rings = Array.from({length: NRINGS}, (_, d) => {
+    const s = (1 - d * rStep) * pulse;
+    return { rx: r * s, ry: r * s * vScale, cx: t.x, cy: t.y - d * yShift };
+  });
+
+  ctx.save();
+
+  // 1. Halo ambiant externe
+  const halo = ctx.createRadialGradient(t.x, t.y, r * 0.1, t.x, t.y, r * 1.85);
+  halo.addColorStop(0.35, `rgba(${cr},${cg},${cb}, 0.0)`);
+  halo.addColorStop(0.72, `rgba(${cr},${cg},${cb}, 0.16)`);
+  halo.addColorStop(1.0,  'rgba(0,0,0,0)');
+  ctx.beginPath(); ctx.arc(t.x, t.y, r * 1.85, 0, Math.PI * 2);
+  ctx.fillStyle = halo; ctx.fill();
+
+  // 2. Fond intérieur du tunnel (dégradé radial, donne la profondeur)
+  {
+    const fr = rings[0];
+    const depth = ctx.createRadialGradient(t.x, fr.cy - fr.ry * 0.25, 1, t.x, fr.cy, fr.rx * 1.05);
+    depth.addColorStop(0.0, `rgba(${cr},${cg},${cb}, 0.08)`);
+    depth.addColorStop(0.5, `rgba(2, 6, 24, 0.82)`);
+    depth.addColorStop(1.0, `rgba(0, 2, 12, 0.97)`);
     ctx.beginPath();
-    ctx.ellipse(t.x, t.y, rr, rr * 0.35, 0, 0, Math.PI * 2);
-    ctx.strokeStyle = col;
-    ctx.lineWidth = i === 0 ? 2.5 : 1;
-    ctx.globalAlpha = alpha;
-    ctx.stroke();
-    ctx.globalAlpha = 1;
+    ctx.ellipse(fr.cx, fr.cy, fr.rx, fr.ry, 0, 0, Math.PI * 2);
+    ctx.fillStyle = depth; ctx.fill();
   }
 
-  // Dark hole center
-  ctx.beginPath();
-  ctx.ellipse(t.x, t.y, r * 0.52, r * 0.18, 0, 0, Math.PI * 2);
-  ctx.fillStyle = 'rgba(0,0,0,0.75)';
-  ctx.fill();
+  // 3. Parois du tunnel entre anneaux consécutifs (evenodd = donut)
+  for (let d = 0; d < NRINGS - 1; d++) {
+    const outer = rings[d];
+    const inner = rings[d + 1];
+    const b = (1 - d * 0.28) * 0.38;
+    const wg = ctx.createLinearGradient(0, inner.cy - inner.ry, 0, outer.cy + outer.ry * 0.6);
+    wg.addColorStop(0,   `rgba(${cr},${cg},${cb}, ${b * 0.85})`);
+    wg.addColorStop(0.55,`rgba(${Math.floor(cr*0.35)},${Math.floor(cg*0.35)},${Math.floor(cb*0.45)}, ${b * 0.6})`);
+    wg.addColorStop(1,   `rgba(0, 3, 18, 0.25)`);
+    ctx.beginPath();
+    ctx.ellipse(outer.cx, outer.cy, outer.rx + 0.5, outer.ry + 0.5, 0, 0, Math.PI * 2);
+    ctx.ellipse(inner.cx, inner.cy, inner.rx,       inner.ry,       0, 0, Math.PI * 2);
+    ctx.fillStyle = wg;
+    ctx.fill('evenodd');
+  }
 
+  // 4. Anneaux du plus loin au plus proche
+  for (let d = NRINGS - 1; d >= 0; d--) {
+    const ring = rings[d];
+    const a = (1.0 - d * 0.18) * pulse;
+    const lw = d === 0 ? 2.4 : 1.5 - d * 0.15;
 
-  // Label
+    // Lueur douce
+    ctx.beginPath();
+    ctx.ellipse(ring.cx, ring.cy, ring.rx, ring.ry, 0, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(${cr},${cg},${cb}, ${a * 0.28})`;
+    ctx.lineWidth = lw + 7;
+    ctx.stroke();
+
+    // Anneau principal
+    ctx.beginPath();
+    ctx.ellipse(ring.cx, ring.cy, ring.rx, ring.ry, 0, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(${cr},${cg},${cb}, ${a})`;
+    ctx.lineWidth = lw;
+    ctx.stroke();
+
+    // Reflet spéculaire (arc supérieur) sur les 2 anneaux avant
+    if (d <= 1) {
+      ctx.beginPath();
+      ctx.ellipse(ring.cx, ring.cy, ring.rx * 0.8, ring.ry * 0.8, 0, -Math.PI * 0.78, -Math.PI * 0.22);
+      ctx.strokeStyle = `rgba(255,255,255, ${(0.75 - d * 0.35) * pulse})`;
+      ctx.lineWidth = 1.2 - d * 0.2;
+      ctx.stroke();
+    }
+  }
+
+  // 5. Label
+  const labelY = t.y - yShift * 1.2;
   const fontSize = t.label.length > 8 ? 12 : t.label.length > 5 ? 14 : 17;
-  ctx.save();
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.font = `bold ${fontSize}px Segoe UI`;
-  ctx.fillStyle = 'rgba(0,0,0,0.85)';
-  ctx.fillText(t.label, t.x + 1, t.y + 1);
+  ctx.shadowBlur = 10;
+  ctx.shadowColor = col;
+  ctx.fillStyle = 'rgba(0,0,0,0.75)';
+  ctx.fillText(t.label, t.x + 1, labelY + 1);
+  ctx.shadowBlur = 0;
   ctx.fillStyle = '#ffffff';
-  ctx.fillText(t.label, t.x, t.y);
+  ctx.fillText(t.label, t.x, labelY);
+
   ctx.restore();
 }
 
@@ -754,15 +949,81 @@ function drawPlane(x, y, bank, vy, prompt, verb) {
   ctx.restore();
 }
 
-// Draws using the plane.png sprite.
-// Nez vers le HAUT dans l'image → pas de rotation.
+// Animated engine flames — drawn in additive mode so they glow over the sprite.
+// engineY : y-position of the nozzle in sprite-local coords (positive = toward tail).
+function drawEngineFlames(bank) {
+  const t = animTime;
+  const scaleX = 1 - Math.abs(bank) * 0.12;
+
+  // Engine nozzle is at roughly 38% of half-height down from center
+  // (sprite: nose at top, engine at ~85% from top → in [-55,+55] coords ≈ +39)
+  const nozzleY = 39;
+
+  ctx.save();
+  ctx.scale(scaleX, 1);
+  ctx.globalCompositeOperation = 'lighter'; // additive glow
+
+  // ---- Core inner flame (bright white-cyan) ----
+  const coreLen = 28 + 10 * Math.sin(t * 22) + 6 * Math.sin(t * 37 + 1.3);
+  const coreW   = 5  +  2 * Math.sin(t * 19 + 0.7);
+  const cg = ctx.createLinearGradient(0, nozzleY, 0, nozzleY + coreLen);
+  cg.addColorStop(0,   'rgba(200, 240, 255, 0.95)');
+  cg.addColorStop(0.3, 'rgba(100, 200, 255, 0.7)');
+  cg.addColorStop(1,   'rgba(40,  120, 255, 0)');
+  ctx.beginPath();
+  ctx.moveTo(-coreW, nozzleY);
+  ctx.bezierCurveTo(-coreW * 1.4, nozzleY + coreLen * 0.45,
+                    -coreW * 0.2, nozzleY + coreLen * 0.85,
+                     0,           nozzleY + coreLen);
+  ctx.bezierCurveTo( coreW * 0.2, nozzleY + coreLen * 0.85,
+                     coreW * 1.4, nozzleY + coreLen * 0.45,
+                     coreW,       nozzleY);
+  ctx.fillStyle = cg;
+  ctx.fill();
+
+  // ---- Outer flame plume (blue, longer, softer) ----
+  const outerLen = 55 + 18 * Math.sin(t * 14 + 0.5) + 10 * Math.sin(t * 27 + 2.1);
+  const outerW   = 12 +  4 * Math.sin(t * 11 + 1.0);
+  // Slight lateral drift for a live feel
+  const drift = 1.5 * Math.sin(t * 8.3);
+  const og = ctx.createLinearGradient(0, nozzleY, 0, nozzleY + outerLen);
+  og.addColorStop(0,   'rgba(80, 180, 255, 0.55)');
+  og.addColorStop(0.4, 'rgba(30, 100, 255, 0.35)');
+  og.addColorStop(0.75,'rgba(10,  50, 200, 0.15)');
+  og.addColorStop(1,   'rgba(0,   20, 150, 0)');
+  ctx.beginPath();
+  ctx.moveTo(-outerW, nozzleY);
+  ctx.bezierCurveTo(-outerW * 1.5 + drift, nozzleY + outerLen * 0.4,
+                    -outerW * 0.3 + drift,  nozzleY + outerLen * 0.85,
+                     drift,                 nozzleY + outerLen);
+  ctx.bezierCurveTo( outerW * 0.3 + drift,  nozzleY + outerLen * 0.85,
+                     outerW * 1.5 + drift,  nozzleY + outerLen * 0.4,
+                     outerW,                nozzleY);
+  ctx.fillStyle = og;
+  ctx.fill();
+
+  // ---- Glow halo at nozzle ----
+  const haloR = 10 + 4 * Math.sin(t * 20);
+  const hg = ctx.createRadialGradient(0, nozzleY, 0, 0, nozzleY, haloR);
+  hg.addColorStop(0,   'rgba(150, 230, 255, 0.5)');
+  hg.addColorStop(0.5, 'rgba(60,  160, 255, 0.2)');
+  hg.addColorStop(1,   'rgba(20,   80, 255, 0)');
+  ctx.beginPath();
+  ctx.arc(0, nozzleY, haloR, 0, Math.PI * 2);
+  ctx.fillStyle = hg;
+  ctx.fill();
+
+  ctx.restore();
+}
+
+// Draws using the plane.png sprite, nez vers le HAUT.
 function drawPlaneSprite(bank) {
   const spr = processedSprite;
-  // Taille d'affichage : hauteur fixe 110px, largeur proportionnelle
   const drawH = 110;
   const drawW = drawH * (spr.width / spr.height);
+  // Flames first (behind sprite so nozzle area overlaps cleanly)
+  drawEngineFlames(bank);
   ctx.save();
-  // Légère compression horizontale lors du virage (effet 3D)
   ctx.scale(1 - Math.abs(bank) * 0.12, 1);
   ctx.drawImage(spr, -drawW / 2, -drawH / 2, drawW, drawH);
   ctx.restore();
@@ -890,6 +1151,7 @@ initStars();
 
 function drawStartBg() {
   if (state === 'playing' || state === 'gameover' || state === 'victory') return;
+  animTime += 1 / 60; // ~60fps tick for menu animations
   if (menuBgImage && state === 'intro') {
     // Draw menu background image, cover-fit
     const iw = menuBgImage.naturalWidth, ih = menuBgImage.naturalHeight;
